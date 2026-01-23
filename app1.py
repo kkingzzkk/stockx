@@ -14,7 +14,7 @@ from datetime import datetime, time, timedelta
 FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg"
 
 # === [1. 페이지 설정] ===
-st.set_page_config(page_title="QUANT NEXUS : HYBRID MASTER", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT NEXUS : FINAL MASTER", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
 # === [2. 관심종목 세션] ===
 if 'watchlist' not in st.session_state:
@@ -67,7 +67,7 @@ st.markdown("""
     .ticker-header { font-size: 18px; font-weight: bold; color: #00CCFF; text-decoration: none !important; }
     .badge { padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: bold; color: white; margin-left: 5px; }
     .news-line { color: #ffa502; font-size: 12px; margin-top: 4px; padding: 4px; background-color: #2d2d2d; border-radius: 4px; display: block; border-left: 3px solid #ffa502; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .ai-desc { font-size: 11px; color: #ccc; margin-top: 5px; font-style: italic; }
+    .ai-desc { font-size: 11px; color: #ccc; margin-top: 5px; font-style: italic; text-align: center; }
     
     /* Strategy Badges */
     .st-gamma { background-color: #6c5ce7; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
@@ -76,10 +76,11 @@ st.markdown("""
     .st-dip { background-color: #e17055; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
     .st-none { background-color: #333; color: #777; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
     .st-highconv { background-color: #e17055; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; margin-left: 5px; }
+    .mkt-pre { background-color: #d29922; color: black; } .mkt-reg { background-color: #238636; } .mkt-aft { background-color: #1f6feb; } .mkt-cls { background-color: #6e7681; }
 </style>
 """, unsafe_allow_html=True)
 
-# === [5. 27개 섹터 데이터] ===
+# === [5. 27개 섹터 (레버리지 2종 추가됨)] ===
 SECTORS = {
     "01. 🔥 지수 레버리지 (2x/3x)": ["TQQQ", "SQQQ", "SOXL", "SOXS", "UPRO", "SPXU", "TMF", "TMV", "LABU", "LABD", "FNGU", "FNGD", "BULZ", "BERZ", "YINN", "YANG", "UVXY", "BOIL", "KOLD"],
     "02. 💣 개별주 레버리지 (2x/3x)": ["NVDL", "NVDS", "TSLL", "TSLQ", "AMZU", "AAPU", "GOOX", "MSFU", "CONL", "MSTX", "MSTY", "BITX", "NVDX", "BABX"],
@@ -108,7 +109,7 @@ SECTORS = {
     "25. Food & Beverage": ["PEP", "KO", "MDLZ", "MNST", "HSY", "KDP", "GIS", "K", "SBUX", "CMG", "MCD", "YUM", "DPZ"],
     "26. Cybersecurity": ["PANW", "CRWD", "FTNT", "NET", "ZS", "OKTA", "CYBR", "HACK", "CIBR", "DOCU", "DBX"],
     "27. Space Economy": ["SPCE", "RKLB", "ASTS", "BKSY", "PL", "SPIR", "LUNR", "VSAT", "IRDM", "JOBY", "ACHR", "UP", "MNTS", "RDW", "SIDU", "LLAP", "VORB", "ASTR", "DCO", "TL0", "BA", "LMT", "NOC", "RTX", "LHX", "GD", "HII", "LDOS", "TXT", "HWM"],
-    "28. 🇺🇸 시장 지수": ["SPY", "QQQ", "DIA", "IWM", "VTI", "VOO", "TLT", "HYG", "VXX"]
+    "28. 🇺🇸 시장 지수 (1x)": ["SPY", "QQQ", "DIA", "IWM", "VTI", "VOO", "TLT", "HYG", "VXX"]
 }
 ALL_TICKERS = sorted(list(set([ticker for s in SECTORS.values() for ticker in s])))
 
@@ -121,7 +122,7 @@ INDEX_CONSTITUENTS = {
 # === [6. 설정값] ===
 CONFIG = {"NAV": 10000, "BASE_BET": 0.15}
 
-# === [7. 엔진: AI Hybrid Logic] ===
+# === [7. 엔진: AI Logic] ===
 @st.cache_data(ttl=600)
 def get_market_data(tickers):
     tickers = list(set(tickers))
@@ -144,8 +145,9 @@ def get_market_data(tickers):
     def fetch_single(ticker):
         try:
             stock = yf.Ticker(ticker)
+            # [핵심 수정] 데이터 검증 완화 (최소 5일치만 있으면 OK) -> "데이터 오류" 해결
             hist_day = stock.history(period="1y") 
-            if hist_day.empty or len(hist_day) < 20: return None # 최소 데이터 조건 완화
+            if hist_day.empty or len(hist_day) < 5: return None
             
             hist_rt = stock.history(period="1d", interval="1m", prepost=True)
             cur = hist_rt['Close'].iloc[-1] if not hist_rt.empty else hist_day['Close'].iloc[-1]
@@ -161,8 +163,11 @@ def get_market_data(tickers):
             lower_bb = ma20 - (std20 * 2)
             bbw = (upper_bb - lower_bb) / ma20
             
+            # 안전장치: rank 계산 시 NaN 방지
             bbw_val = bbw.rank(pct=True).iloc[-1]
             sc_squeeze = (1 - (bbw_val if not np.isnan(bbw_val) else 0.5)) * 10
+            
+            sc_trend = 7.0 if cur > ma20.iloc[-1] else 3.0
             
             vol_avg = hist_day['Volume'].rolling(20).mean().iloc[-1]
             vol_ratio = (hist_day['Volume'].iloc[-1] / vol_avg) if vol_avg > 0 else 1.0
@@ -174,17 +179,18 @@ def get_market_data(tickers):
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean().iloc[-1]
             rsi = 100 - (100 / (1 + gain/(loss if loss != 0 else 0.0001)))
             
-            # Options Check
-            pcr = 1.0; c_vol = 0; p_vol = 0
+            # Options
+            pcr = 1.0; c_vol = 0; p_vol = 0; sc_option = 5.0
             try:
                 opts = stock.options
                 if opts:
                     chain = stock.option_chain(opts[0])
                     c_vol = chain.calls['volume'].sum(); p_vol = chain.puts['volume'].sum()
                     if c_vol > 0: pcr = p_vol / c_vol
+                    sc_option = 7.0 if pcr < 0.7 else 3.0 if pcr > 1.2 else 5.0
             except: pass
 
-            # === [AI 전략 로직: Korean Master 이식] ===
+            # === [AI 전략 로직] ===
             category = "NONE"
             strat_name = "관망"
             strat_class = "st-none"
@@ -193,7 +199,7 @@ def get_market_data(tickers):
             target_pct, stop_pct, trail_pct = 0.05, 0.03, 0.02
             time_stop_days = 5
             
-            # 1. 🚀 세력 수급 돌파 (Breakout)
+            # 1. 🚀 단타 (수급 돌파)
             if cur > upper_bb.iloc[-1] and vol_ratio > 1.8:
                 category = "SHORT"
                 strat_name = "🚀 수급 돌파"
@@ -202,7 +208,7 @@ def get_market_data(tickers):
                 target_pct, stop_pct, trail_pct = 0.12, 0.05, 0.03
                 time_stop_days = 2
 
-            # 2. 🌊 에너지 응축 (Squeeze)
+            # 2. 🌊 스윙 (에너지 응축)
             elif sc_squeeze > 8.0:
                 category = "SWING"
                 strat_name = "🌊 에너지 응축"
@@ -211,7 +217,7 @@ def get_market_data(tickers):
                 target_pct, stop_pct, trail_pct = 0.15, 0.05, 0.04
                 time_stop_days = 10
                 
-            # 3. 🛡️ 과매도 반등 (Dip Buy)
+            # 3. 🛡️ 스윙 (과매도 반등)
             elif cur <= lower_bb.iloc[-1] and rsi < 35:
                 category = "SWING"
                 strat_name = "🛡️ 과매도 반등"
@@ -220,7 +226,7 @@ def get_market_data(tickers):
                 target_pct, stop_pct, trail_pct = 0.08, 0.07, 0.03
                 time_stop_days = 5
                 
-            # 4. 💎 대세 상승 (Golden Cross)
+            # 4. 🌲 장투 (대세 상승)
             elif cur > ma20.iloc[-1] and (len(ma200) > 0 and cur > ma200.iloc[-1]) and 50 < rsi < 70:
                 category = "LONG"
                 strat_name = "💎 대세 상승"
@@ -235,7 +241,7 @@ def get_market_data(tickers):
                 try: news_ok, news_hl = check_recent_news(ticker)
                 except: pass
 
-            # 가격 계산 (익절라인 > 현재가 보장)
+            # [핵심 수정] 익절라인(TrailStop) > 현재가 보장
             tgt_val = cur * (1 + target_pct)
             trl_val = cur * (1 + trail_pct)  # Plus!
             stp_val = cur * (1 - stop_pct)
@@ -285,7 +291,7 @@ def create_chart(data, ticker, unique_id):
 with st.sidebar:
     st.title("🪟 KOREAN MASTER")
     st.caption(f"Account NAV: ${CONFIG['NAV']:,}")
-    mode = st.radio("분석 모드", ["📌 섹터별 보기", "🔍 무제한 검색", "🔥 인덱스 스캔", "⭐ 내 관심종목 보기"])
+    mode = st.radio("분석 모드", ["📌 섹터별 보기", "🔍 무제한 검색", "🔥 인덱스 스캔", "🏆 AI 추천 포트폴리오", "⭐ 내 관심종목 보기"])
     
     target_tickers = []
     
@@ -299,6 +305,7 @@ with st.sidebar:
                 st.rerun()
                 
     elif "섹터" in mode:
+        # [수정] 드래그 X -> Selectbox(드롭다운) O
         selected_sector = st.selectbox("섹터 선택", list(SECTORS.keys()))
         target_tickers = SECTORS[selected_sector]
         
@@ -324,7 +331,7 @@ if target_tickers:
     
     if not market_data:
         if mode != "⭐ 내 관심종목 보기":
-            st.warning("데이터를 불러올 수 없습니다.")
+            st.warning("데이터를 불러올 수 없습니다. (시장 휴장 또는 데이터 부족)")
     else:
         def render_card(row, unique_id):
             def get_color(val): return "sc-high" if val >= 7 else "sc-mid" if val >= 4 else "sc-low"
@@ -383,8 +390,10 @@ if target_tickers:
                     st.rerun()
             
             st.markdown(html_content, unsafe_allow_html=True)
+            # [수정] Key Error 방지 (unique_id 활용)
             st.plotly_chart(create_chart(row['History'], row['Ticker'], unique_id), use_container_width=True, key=f"chart_{unique_id}", config={'displayModeBar':False})
 
+        # [AI 추천 포트폴리오 탭 복구]
         if "추천" in mode or "인덱스" in mode:
             df = pd.DataFrame(market_data)
             t1, t2, t3 = st.tabs(["🚀 단타 (수급/돌파)", "🌊 스윙 (응축/반등)", "🌲 장투 (대세상승)"])
