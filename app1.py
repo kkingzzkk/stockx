@@ -14,7 +14,7 @@ from datetime import datetime, time, timedelta
 FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg"
 
 # === [1. 페이지 설정] ===
-st.set_page_config(page_title="QUANT NEXUS : MASTER UI", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT NEXUS : PRO", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
 # === [2. 세션 및 자금 관리 초기화] ===
 if 'watchlist' not in st.session_state:
@@ -86,8 +86,8 @@ st.markdown("""
     .badge { padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: bold; color: white; margin-left: 5px; vertical-align: middle;}
     .mkt-pre { background-color: #d29922; color: black; } .mkt-reg { background-color: #238636; color: white; } .mkt-aft { background-color: #1f6feb; color: white; } .mkt-cls { background-color: #6e7681; color: white; }
     
-    /* Action Status Colors */
-    .act-buy { border: 2px solid #00FF00 !important; } 
+    /* Action Status Colors - Visual Feedback */
+    .act-buy { border: 2px solid #00FF00 !important; box-shadow: 0 0 10px rgba(0,255,0,0.1); } 
     .act-watch { border: 1px solid #FFD700 !important; } 
     
     .st-gamma { background-color: #6c5ce7; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block; }
@@ -223,6 +223,7 @@ def get_market_data(tickers, effective_nav, consec_loss):
 
             category = "NONE"; strat_name = "관망"; strat_class = "st-none"; desc = "특이사항 없음"
             
+            # --- [전략 정의] ---
             if cur > upper_bb.iloc[-1] and vol_ratio > 1.5: 
                 if rsi_intra > 75: 
                     category = "NONE"; strat_name = "🚫 단기 과열"; strat_class = "st-none"
@@ -241,6 +242,7 @@ def get_market_data(tickers, effective_nav, consec_loss):
                 category = "LONG"; strat_name = "💎 대세 상승"; strat_class = "st-value"
                 desc = "이평선 정배열 + 안정적 우상향"
 
+            # --- [점수 계산 (감점제)] ---
             score = 0
             if category == "SCALP":
                 score = 50 
@@ -275,6 +277,7 @@ def get_market_data(tickers, effective_nav, consec_loss):
                 else:
                     score += 10 
 
+            # --- [Signal vs Action 분리] ---
             cut_signal, cut_buy = 40, 60
             if category == "SCALP": cut_signal, cut_buy = 45, 65
             elif category == "LONG": cut_signal, cut_buy = 50, 70
@@ -398,7 +401,7 @@ with st.sidebar:
         
         if scan_option == "📂 섹터별 보기":
             sector_list = ["전체(ALL)"] + list(SECTORS.keys())
-            # [수정] 드래그 X -> 라디오(리스트)로 변경
+            # [수정] 드래그 삭제 -> 라디오 버튼으로 펼침
             selected_sector = st.radio("섹터 선택", sector_list)
             
             if st.button("🚀 섹터 분석 시작"):
