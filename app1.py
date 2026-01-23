@@ -14,7 +14,7 @@ from datetime import datetime, time, timedelta
 FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg"
 
 # === [1. 페이지 설정] ===
-st.set_page_config(page_title="QUANT NEXUS : FLOW", page_icon="🌊", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT NEXUS : FINAL", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
 # === [2. 세션 및 자금 관리 초기화] ===
 if 'watchlist' not in st.session_state:
@@ -63,7 +63,7 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# === [4. 스타일] ===
+# === [4. 스타일 (UI 깨짐 방지 완벽 적용)] ===
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; }
@@ -155,10 +155,13 @@ INDEX_CONSTITUENTS = {
 CONFIG = {"MAX_RISK": 0.01} 
 
 # === [7. 엔진: Logic Core] ===
-# [CRITICAL] CACHE DISABLED
 def get_market_data(tickers, effective_nav, consec_loss):
     tickers = list(set(tickers))
-    is_halted = True if consec_loss >= 2 else False
+    
+    # [Tilt Control] 3회 연속 손실 시 매매 중단
+    if consec_loss >= 3:
+        return [] 
+        
     data_list = []
     
     def fetch_single(ticker):
@@ -193,6 +196,7 @@ def get_market_data(tickers, effective_nav, consec_loss):
             open_p = hist_day['Open'].iloc[-1]
             prev_c = hist_day['Close'].iloc[-2]
             
+            # [Fix: Missing Variables]
             diff_open = cur - open_p
             chg_open = (diff_open / open_p) * 100 if open_p > 0 else 0
             diff_prev = cur - prev_c
@@ -214,11 +218,9 @@ def get_market_data(tickers, effective_nav, consec_loss):
             if cur > ma20.iloc[-1]: sc_trend += 5
             if len(ma200) > 0 and cur > ma200.iloc[-1]: sc_trend += 5
             
-            # [FIX 1] Volume Logic: Intraday Sum vs Daily Avg
             vol_avg = hist_day['Volume'].rolling(5).mean().iloc[-1]
             if vol_avg > 0:
                 if not hist_rt.empty:
-                    # Intraday Cumulative Volume vs Daily Average
                     vol_ratio = hist_rt['Volume'].sum() / vol_avg
                 else:
                     vol_ratio = hist_day['Volume'].iloc[-1] / vol_avg
@@ -250,7 +252,7 @@ def get_market_data(tickers, effective_nav, consec_loss):
 
             category = "NONE"; strat_name = "관망"; strat_class = "st-none"; desc = "조건 부족"
             
-            # [FIX] SCALP 
+            # [전략 진입 조건: 현실화]
             if cur > (upper_bb.iloc[-1] * 0.95) and vol_ratio > 1.0: 
                 if rsi_intra > 85: 
                     category = "NONE"; strat_name = "🚫 단기 과열"; strat_class = "st-none"
@@ -269,19 +271,17 @@ def get_market_data(tickers, effective_nav, consec_loss):
                 category = "LONG"; strat_name = "💎 대세 상승"; strat_class = "st-value"
                 desc = "이평선 정배열 + 안정적 우상향"
 
-            # --- [점수 계산] ---
+            # --- [점수 계산: 점수 쌓기 방식] ---
             score = 0
             if category == "SCALP": score = 35 
-            elif category == "SWING": score = 35 # [FIX 2] SWING Base Score Up
-            elif category == "LONG": score = 30
+            elif category == "SWING" or category == "LONG": score = 30
             else: score = 20 
 
-            # 가점/감점
             if has_option:
                 if category != "SCALP" and cur > put_wall: score += 10 
                 if pcr >= 1.1: score += 5
             else:
-                score += 5 
+                score += 10 # [Fix] 옵션 데이터 없음 보상 (+10)
                 
             if vol_ratio > 1.2: score += 10 
             if sc_squeeze > 8: score += 10
@@ -295,24 +295,21 @@ def get_market_data(tickers, effective_nav, consec_loss):
                 except: pass
             
             if category == "SCALP" and news_ok:
-                score += 5 
+                score += 5 # 뉴스 가산점
                 desc = "뉴스 호재 + 수급 (주목)"
 
             if category == "NONE" and score >= 25:
                 category = "SWING"
-                score += 10 
+                score += 10 # 패자부활전 가산점
                 strat_name = "🔍 잠재력 관찰"
                 strat_class = "st-none"
                 desc = "뚜렷한 패턴 없으나 점수 양호"
 
-            cut_signal, cut_buy = 30, 50 
+            # [FIX] BUY 컷 현실화 (45점)
+            cut_signal, cut_buy = 30, 45 
             if category == "SCALP": cut_signal, cut_buy = 35, 45 
             elif category == "LONG": cut_signal, cut_buy = 40, 60
             
-            # [FIX 3] Rescue Cutoff
-            if strat_name == "🔍 잠재력 관찰":
-                cut_buy = 40
-
             action_status = "IGNORE"
             if score >= cut_buy: action_status = "BUY"
             elif score >= cut_signal: action_status = "WATCH"
@@ -352,11 +349,11 @@ def get_market_data(tickers, effective_nav, consec_loss):
             qty = 0
             
             if action_status == "BUY": 
+                # [FIX] 베팅 강도 현실화
                 if score >= 70: multiplier = 0.6
                 elif score >= 55: multiplier = 0.4
-                elif score >= 40: multiplier = 0.2
+                elif score >= 45: multiplier = 0.2
                 
-                # [FIX 4] Minimum Multiplier Guarantee
                 if multiplier == 0: multiplier = 0.2
 
                 final_risk = risk_amt * multiplier * tilt_factor
@@ -420,7 +417,9 @@ with st.sidebar:
     st.info(f"⚡ 운용 가능 자금: ${effective_nav:,.0f}")
     
     if st.session_state.CONSEC_LOSS >= 2:
-        st.error(f"🚨 [경고] 연속 손실 {st.session_state.CONSEC_LOSS}회. 단타 매매 금지.")
+        st.error(f"🚨 [경고] 연속 손실 {st.session_state.CONSEC_LOSS}회. 리스크 가중치 70% 적용.")
+    if st.session_state.CONSEC_LOSS >= 3:
+        st.error(f"⛔ [매매 중단] 연속 손실 {st.session_state.CONSEC_LOSS}회. 뇌동매매 방지를 위해 진입 차단.")
     
     mode = st.radio("분석 모드", ["🏆 AI 전체 시장 스캔", "🔍 무제한 검색", "⭐ 내 관심종목 보기"])
     
@@ -445,7 +444,6 @@ with st.sidebar:
         
         if scan_option == "📂 섹터별 보기":
             sector_list = ["전체(ALL)"] + list(SECTORS.keys())
-            # [수정] 드래그 삭제 -> 라디오 버튼 (일렬 나열)
             selected_sector = st.radio("섹터 선택", sector_list)
             
             if st.button("🚀 섹터 분석 시작"):
@@ -466,7 +464,6 @@ if target_tickers:
         market_data = get_market_data(target_tickers, effective_nav, st.session_state.CONSEC_LOSS)
     
     if market_data:
-        # [FIX] Sorting: BUY -> WATCH -> IGNORE
         def sort_key(x):
             priority = {"BUY": 3, "WATCH": 2, "IGNORE": 1}
             return (priority.get(x['Action'], 0), x['Score'])
@@ -492,6 +489,7 @@ if target_tickers:
             badge_html = f"<span class='st-highconv'>📰 News Alert</span>" if row['HighConviction'] else ""
             news_html = f"<div class='news-line'>{row['NewsHeadline']}</div>" if row['HighConviction'] and row['NewsHeadline'] else ""
 
+            # [UI Restoration] Fixed HTML indentation for Streamlit (One-liner style to be safe)
             html_content = f"""<div class="metric-card {card_class}"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div><div style="font-weight:bold; color:{act_color}; font-size:12px; border:1px solid {act_color}; padding:2px 6px; border-radius:4px;">{act_badge}</div></div>{news_html}<div class="price-row"><span class="price-label">현재(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_op}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_pr}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div><div style="margin-top:10px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="ai-desc">💡 {row['Desc']}</div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">점수<br><span class="score-val {get_color(row['Score']/10)}">{row['Score']}</span></div></div><div class="pt-box"><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val" style="color:#00FF00">${row['Target']:.2f}</span></div><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val" style="color:#74b9ff">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val" style="color:#FF4444">${row['Stop']:.2f}</span></div></div><div class="indicator-box">RSI: {row['RSI']:.0f} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"><div class="exit-box"><span style="color:#00FF00; font-weight:bold;">🌊 트레일링 시작: ${row['TrailStop']:.2f}</span><br><span style="color:#FF4444;">🚨 손절(Max): ${row['HardStop']:.2f}</span><br><span style="color:#aaa;">⏳ 기한: {row['TimeStop']}일</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">AI 비중 제안</span><br><span class="bet-badge bet-bg">{row['BetText']}</span></div></div></div>"""
             
             c1, c2 = st.columns([0.85, 0.15])
