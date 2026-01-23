@@ -9,12 +9,12 @@ import requests
 from datetime import datetime, time, timedelta
 
 # ==========================================
-# 🔑 API 설정
+# 🔑 API 설정 (Finnhub)
 # ==========================================
 FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg"
 
 # === [1. 페이지 설정] ===
-st.set_page_config(page_title="QUANT NEXUS : FINAL", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT NEXUS : GOLD MASTER", page_icon="🏆", layout="wide", initial_sidebar_state="expanded")
 
 # === [2. 세션 및 자금 관리 초기화] ===
 if 'watchlist' not in st.session_state:
@@ -26,7 +26,7 @@ if 'REAL_LOSS' not in st.session_state:
 if 'CONSEC_LOSS' not in st.session_state:
     st.session_state.CONSEC_LOSS = 0
 
-# === [3. 유틸리티] ===
+# === [3. 유틸리티 & 레짐 판독] ===
 def get_market_status():
     ny_tz = pytz.timezone('America/New_York')
     now_ny = datetime.now(ny_tz)
@@ -36,6 +36,32 @@ def get_market_status():
     elif time(9,30) <= curr <= time(16,0): return "REG", "정규장", "mkt-reg"
     elif time(16,0) < curr <= time(20,0): return "AFTER", "애프터", "mkt-aft"
     else: return "CLOSE", "마감", "mkt-cls"
+
+@st.cache_data(ttl=600)
+def get_market_regime():
+    try:
+        spy = yf.Ticker("SPY").history(period="1y")
+        vix = yf.Ticker("^VIX").history(period="5d")
+        
+        if spy.empty or vix.empty: return "NEUTRAL", 65
+        
+        spy_cur = spy['Close'].iloc[-1]
+        spy_ma200 = spy['Close'].rolling(200).mean().iloc[-1]
+        vix_cur = vix['Close'].iloc[-1]
+        
+        regime_score = 5
+        if spy_cur > spy_ma200: regime_score += 3
+        else: regime_score -= 3
+        
+        if vix_cur < 15: regime_score += 2
+        elif vix_cur > 25: regime_score -= 2
+        
+        if regime_score >= 7: return "BULL", 75
+        elif regime_score >= 4: return "NEUTRAL", 65
+        else: return "BEAR", 55 
+        
+    except:
+        return "NEUTRAL", 65
 
 @st.cache_data(ttl=300) 
 def check_recent_news(ticker):
@@ -145,16 +171,11 @@ SECTORS = {
 }
 ALL_TICKERS = sorted(list(set([ticker for s in SECTORS.values() for ticker in s])))
 
-INDEX_CONSTITUENTS = {
-    "NASDAQ100": ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "AVGO", "COST", "PEP", "CSCO", "TMUS", "CMCSA", "INTC", "AMD", "QCOM", "TXN", "AMGN", "HON", "INTU", "SBUX", "GILD", "MDLZ", "BKNG", "ADI", "ISRG", "ADP", "REGN", "VRTX", "LRCX", "PANW", "SNPS", "CDNS", "KLAC", "ASML", "MELI", "MNST", "ORCL", "MAR", "NXPI", "CTAS", "FTNT", "DXCM", "WDAY", "MCHP", "AEP", "KDP", "LULU", "MRVL", "ADSK"],
-    "SP500_TOP": ["MSFT", "AAPL", "NVDA", "AMZN", "GOOGL", "META", "BRK.B", "TSLA", "LLY", "AVGO", "JPM", "V", "UNH", "XOM", "MA", "JNJ", "HD", "PG", "COST", "MRK", "ABBV", "CRM", "CVX", "BAC", "AMD", "NFLX", "PEP", "KO", "WMT", "ADBE", "TMO", "ACN", "LIN", "MCD", "CSCO", "ABT", "DIS", "INTU", "WFC", "VZ", "CMCSA", "QCOM", "DHR", "CAT", "TXN", "AMGN", "IBM", "PM", "UNP", "GE"],
-    "RUSSELL_GROWTH": ["SMCI", "MSTR", "COIN", "CVNA", "AFRM", "DKNG", "HOOD", "RIVN", "SOFI", "PLTR", "PATH", "U", "RBLX", "OPEN", "LCID", "MARA", "RIOT", "CLSK", "GME", "AMC", "UPST", "AI", "IONQ", "RGTI", "QUBT", "JOBY", "ACHR", "ASTS", "LUNR", "RKLB"]
-}
-
 # === [6. 설정값 (실전용)] ===
 CONFIG = {"MAX_RISK": 0.01} 
 
 # === [7. 엔진: Logic Core] ===
+# [CRITICAL] CACHE DISABLED
 def get_market_data(tickers, effective_nav, consec_loss):
     tickers = list(set(tickers))
     
@@ -164,8 +185,31 @@ def get_market_data(tickers, effective_nav, consec_loss):
         
     data_list = []
     
+    # [REGIME CHECK]
+    regime, base_cut = get_market_regime()
+    
+    # [REGIME CONFIGURATION]
+    if regime == "BULL":
+        regime_risk_mult = 1.5  
+        stop_width_mult = 1.2   
+        target_cap = None       
+        time_limit = 20         
+    elif regime == "BEAR":
+        regime_risk_mult = 0.5  
+        stop_width_mult = 0.8   
+        target_cap = 0.06       
+        time_limit = 3          
+    else:
+        regime_risk_mult = 1.0
+        stop_width_mult = 1.0
+        target_cap = 0.10
+        time_limit = 5
+    
     def fetch_single(ticker):
         try:
+            # [FIX 1] Define is_halted LOCALLY to prevent Crash
+            is_halted = True if consec_loss >= 3 else False
+            
             mkt_code, mkt_label, mkt_class = get_market_status()
             
             stock = yf.Ticker(ticker)
@@ -196,7 +240,7 @@ def get_market_data(tickers, effective_nav, consec_loss):
             open_p = hist_day['Open'].iloc[-1]
             prev_c = hist_day['Close'].iloc[-2]
             
-            # [Fix: Missing Variables]
+            # [Fix Missing Variables]
             diff_open = cur - open_p
             chg_open = (diff_open / open_p) * 100 if open_p > 0 else 0
             diff_prev = cur - prev_c
@@ -218,6 +262,7 @@ def get_market_data(tickers, effective_nav, consec_loss):
             if cur > ma20.iloc[-1]: sc_trend += 5
             if len(ma200) > 0 and cur > ma200.iloc[-1]: sc_trend += 5
             
+            # [FIX] Volume Logic
             vol_avg = hist_day['Volume'].rolling(5).mean().iloc[-1]
             if vol_avg > 0:
                 if not hist_rt.empty:
@@ -229,39 +274,47 @@ def get_market_data(tickers, effective_nav, consec_loss):
             
             sc_vol = min(10, vol_ratio * 3)
             
+            # [FIX 2] ATR NaN Defense
             hist_day['TR'] = np.maximum(hist_day['High'] - hist_day['Low'], 
                                         np.maximum(abs(hist_day['High'] - hist_day['Close'].shift(1)), 
                                                    abs(hist_day['Low'] - hist_day['Close'].shift(1))))
             atr = hist_day['TR'].rolling(14).mean().iloc[-1]
+            if pd.isna(atr) or atr <= 0:
+                atr = cur * 0.03 # Default to 3%
 
             rsi_day = calculate_rsi(hist_day['Close']).iloc[-1]
+            if np.isnan(rsi_day): rsi_day = 50
             
             pcr = 1.0; c_vol = 0; p_vol = 0; 
             call_wall = 100000; put_wall = 0
             has_option = False 
             try:
                 opts = stock.options
-                if opts:
-                    chain = stock.option_chain(opts[0])
-                    c_vol = chain.calls['volume'].sum(); p_vol = chain.puts['volume'].sum()
-                    if c_vol > 0: pcr = p_vol / c_vol
-                    call_wall = chain.calls.sort_values('openInterest', ascending=False).iloc[0]['strike']
-                    put_wall = chain.puts.sort_values('openInterest', ascending=False).iloc[0]['strike']
-                    has_option = True
+                # [FIX 3] Option Chain Safety
+                if opts and len(opts) > 0:
+                    try:
+                        chain = stock.option_chain(opts[0])
+                        c_vol = chain.calls['volume'].sum(); p_vol = chain.puts['volume'].sum()
+                        if c_vol > 0: pcr = p_vol / c_vol
+                        call_wall = chain.calls.sort_values('openInterest', ascending=False).iloc[0]['strike']
+                        put_wall = chain.puts.sort_values('openInterest', ascending=False).iloc[0]['strike']
+                        has_option = True
+                    except:
+                        has_option = False
             except: pass
 
             category = "NONE"; strat_name = "관망"; strat_class = "st-none"; desc = "조건 부족"
             
-            # [전략 진입 조건: 현실화]
+            # [CLASSIFICATION]
             if cur > (upper_bb.iloc[-1] * 0.95) and vol_ratio > 1.0: 
                 if rsi_intra > 85: 
                     category = "NONE"; strat_name = "🚫 단기 과열"; strat_class = "st-none"
-                    desc = f"장중 RSI {rsi_intra:.0f} 과열. 추격 금지."
+                    desc = f"장중 RSI {rsi_intra:.0f} 과열"
                 else:
                     category = "SCALP"; strat_name = "🚀 수급 돌파"; strat_class = "st-gamma"
                     desc = f"거래량 폭발({vol_ratio:.1f}배) + 밴드 상단 돌파"
 
-            elif sc_squeeze > 4.0: 
+            elif sc_squeeze > 2.0: 
                 category = "SWING"; strat_name = "🌊 에너지 응축"; strat_class = "st-squeeze"
                 desc = "변동성 극소화, 시세 분출 임박"
             elif cur <= lower_bb.iloc[-1] and rsi_day < 35: 
@@ -271,23 +324,27 @@ def get_market_data(tickers, effective_nav, consec_loss):
                 category = "LONG"; strat_name = "💎 대세 상승"; strat_class = "st-value"
                 desc = "이평선 정배열 + 안정적 우상향"
 
-            # --- [점수 계산: 점수 쌓기 방식] ---
+            # --- [SCORING SYSTEM] ---
             score = 0
             if category == "SCALP": score = 35 
             elif category == "SWING" or category == "LONG": score = 30
             else: score = 20 
 
             if has_option:
-                if category != "SCALP" and cur > put_wall: score += 10 
+                if category != "SCALP" and cur >= put_wall * 0.98: score += 10 
                 if pcr >= 1.1: score += 5
             else:
-                score += 10 # [Fix] 옵션 데이터 없음 보상 (+10)
+                score += 10 
+            
+            if regime == "BULL":
+                if vol_ratio > 1.5: score += 10 
+                if sc_trend >= 8: score += 10   
                 
             if vol_ratio > 1.2: score += 10 
-            if sc_squeeze > 8: score += 10
+            if sc_squeeze > 5: score += 10
             if 40 <= rsi_day <= 70: score += 10 
             
-            if category == "SCALP": score = min(score, 75)
+            if category == "SCALP": score = min(score, 85)
 
             news_ok = False; news_hl = None
             if vol_ratio >= 3.0 and score >= 35: 
@@ -295,66 +352,82 @@ def get_market_data(tickers, effective_nav, consec_loss):
                 except: pass
             
             if category == "SCALP" and news_ok:
-                score += 5 # 뉴스 가산점
+                score += 5 
                 desc = "뉴스 호재 + 수급 (주목)"
 
             if category == "NONE" and score >= 25:
                 category = "SWING"
-                score += 10 # 패자부활전 가산점
+                score += 10 
                 strat_name = "🔍 잠재력 관찰"
                 strat_class = "st-none"
                 desc = "뚜렷한 패턴 없으나 점수 양호"
 
-            # [FIX] BUY 컷 현실화 (45점)
-            cut_signal, cut_buy = 30, 45 
-            if category == "SCALP": cut_signal, cut_buy = 35, 45 
-            elif category == "LONG": cut_signal, cut_buy = 40, 60
+            # [BEAR FILTER]
+            if regime == "BEAR" and rsi_day < 25:
+                score = min(score, 30) 
+                desc = f"⚠️ RSI {rsi_day:.0f} 극단적 과매도 (진입 주의)"
+
+            # [CUTOFF LOGIC]
+            cut_signal, cut_buy = 25, 40 
+            if regime == "BEAR": cut_buy = 42
+            if category == "SCALP": cut_buy += 5
+            elif category == "LONG": cut_buy += 10
             
+            if category == "SWING" and consec_loss >= 2:
+                score -= 10
+
             action_status = "IGNORE"
             if score >= cut_buy: action_status = "BUY"
             elif score >= cut_signal: action_status = "WATCH"
             
             if action_status == "PASS": action_status = "WATCH"
 
-            if score < 15: return None
+            # [RISK PARAMETERS]
+            target_pct = 0.05
+            stop_pct = 0.03 * stop_width_mult
+            trail_pct = 0.02 * stop_width_mult
+            
+            if regime == "BULL":
+                trail_pct = 0.05 
+                time_stop_days = 20 
+                target_pct = 999.0 
+            elif regime == "BEAR":
+                trail_pct = 0.015 
+                time_stop_days = 3 
+                if target_cap: target_pct = min(target_pct, target_cap)
+            else:
+                time_stop_days = 5
 
-            target_pct, stop_pct, trail_pct, time_stop_days = 0.05, 0.03, 0.02, 5
-            if category == "SCALP": target_pct, stop_pct, trail_pct, time_stop_days = 0.06, 0.05, 0.03, 2
-            elif category == "SWING": target_pct, stop_pct, trail_pct, time_stop_days = 0.15, 0.05, 0.04, 10
-            elif category == "LONG": target_pct, stop_pct, trail_pct, time_stop_days = 0.30, 0.10, 0.10, 60
-
-            stop_atr = cur - atr * 1.5
+            stop_atr = cur - atr * 1.5 * stop_width_mult
             if category == "SCALP":
                 stop_price = stop_atr
-                min_stop_level = cur * 0.97 
+                min_stop_level = cur * (1 - 0.03 * stop_width_mult)
             else:
                 stop_price = max(put_wall * 0.99, stop_atr) if (has_option and put_wall < cur) else stop_atr
-                min_stop_level = cur * 0.95 
+                min_stop_level = cur * (1 - 0.05 * stop_width_mult)
             
+            if category == "SWING": stop_price = max(stop_price, cur * 0.96)
             stop_price = max(stop_price, min_stop_level)
             
-            target_calc = cur * (1 + target_pct * 1.5)
-            if category == "SCALP": target_price = target_calc 
-            else: target_price = min(call_wall, target_calc) if (has_option and call_wall > cur) else target_calc
-                
+            target_price = cur * (1 + target_pct * 1.5) if target_pct != 999.0 else 0
             trail_price = cur * (1 + trail_pct) 
             
-            risk_per_share = cur - stop_price
-            risk_per_share = max(risk_per_share, cur * 0.01) 
+            risk_per_share = max(cur - stop_price, cur * 0.01) 
             
-            risk_amt = effective_nav * CONFIG["MAX_RISK"]
+            risk_amt = effective_nav * CONFIG["MAX_RISK"] * regime_risk_mult
             tilt_factor = 0.0 if is_halted else 0.8 ** consec_loss 
             
             multiplier = 0.0
             qty = 0
             
             if action_status == "BUY": 
-                # [FIX] 베팅 강도 현실화
                 if score >= 70: multiplier = 0.6
                 elif score >= 55: multiplier = 0.4
-                elif score >= 45: multiplier = 0.2
+                elif score >= 40: multiplier = 0.2
                 
                 if multiplier == 0: multiplier = 0.2
+                if category == "SWING": multiplier = min(multiplier, 0.3)
+                if regime == "BEAR" and news_ok: multiplier *= 0.7
 
                 final_risk = risk_amt * multiplier * tilt_factor
                 qty = int(final_risk / risk_per_share)
@@ -368,7 +441,6 @@ def get_market_data(tickers, effective_nav, consec_loss):
 
             journal_txt = {
                 "Ticker": ticker, "Strategy": strat_name, "Entry": round(cur, 2), 
-                "Target": round(target_price, 2), "Stop": round(stop_price, 2), 
                 "Score": score, "Time": get_timestamp_str()
             }
             
@@ -378,19 +450,23 @@ def get_market_data(tickers, effective_nav, consec_loss):
             return {
                 "Ticker": ticker, "Price": cur, "Category": category, "StratName": strat_name, "StratClass": strat_class,
                 "Squeeze": sc_squeeze, "Trend": sc_trend, "Vol": sc_vol, "Option": 0, "Desc": desc,
-                "BetAmount": qty * cur, "BetText": bet_text, "Score": score, "Action": action_status,
+                "Score": score, "Ma20": ma20.iloc[-1],
                 "Target": target_price, "Stop": stop_price, 
                 "HardStop": stop_price, "TrailStop": trail_price, "TimeStop": time_stop_days,
                 "Journal": journal_txt, "History": hist_day['Close'],
                 "ChgOpen": chg_open, "ChgPrev": chg_prev, "DiffOpen": diff_open, "DiffPrev": diff_prev,
                 "RSI": rsi_day, "PCR": pcr, "CallVol": c_vol, "PutVol": p_vol, "CallPct": c_pct, "PutPct": p_pct,
-                "MktLabel": mkt_label, "MktClass": mkt_class, "HighConviction": news_ok, "NewsHeadline": news_hl
+                "MktLabel": mkt_label, "MktClass": mkt_class, "HighConviction": news_ok, "NewsHeadline": news_hl,
+                "RiskPerShare": risk_per_share,
+                "Action": action_status, # [CRITICAL] Added for UI Safety
+                "BetText": bet_text      # [CRITICAL] Added for UI Safety
             }
         except Exception as e:
             print(f"❌ {ticker} Error: {e}") 
             return None
     
-    max_workers = 3 if len(tickers) > 50 else 5
+    # [FIX 4] Balanced Workers (4 is safe/fast enough)
+    max_workers = 4
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(fetch_single, t) for t in tickers]
         for f in concurrent.futures.as_completed(futures):
@@ -464,33 +540,49 @@ if target_tickers:
         market_data = get_market_data(target_tickers, effective_nav, st.session_state.CONSEC_LOSS)
     
     if market_data:
+        regime, base_cut = get_market_regime()
+        
+        if regime == "BULL":
+            st.success(f"🚀 BULL MARKET (공격 모드) | 기본 컷: {base_cut}점 | 익절 무제한")
+        elif regime == "BEAR":
+            st.error(f"🐻 BEAR MARKET (생존 모드) | 기본 컷: {base_cut}점 | 리스크 축소")
+        else:
+            st.warning(f"⚖️ NEUTRAL MARKET (중립 모드) | 기본 컷: {base_cut}점")
+
         def sort_key(x):
             priority = {"BUY": 3, "WATCH": 2, "IGNORE": 1}
             return (priority.get(x['Action'], 0), x['Score'])
         
         market_data = sorted(market_data, key=sort_key, reverse=True)
         
+        # [FIX 5] Logic Separation
         if mode == "🏆 AI 전체 시장 스캔" and 'scan_option' in locals() and scan_option == "💎 AI 추천 TOP 50":
-            market_data = market_data[:50]
+            market_data = sorted(market_data, key=lambda x: x['Score'], reverse=True)[:50]
             
         st.caption(f"🔎 분석 완료: {len(market_data)}개 종목 (정렬: BUY > WATCH > IGNORE)")
 
         def render_card(row, unique_id):
+            action_status = row['Action']
+            score = row['Score']
+            
+            card_class = "act-buy" if action_status == "BUY" else ("act-watch" if action_status == "WATCH" else "act-ignore")
+            act_badge = "💎 강력 매수" if action_status == "BUY" else ("👀 관심 신호" if action_status == "WATCH" else "💤 관망")
+            act_color = "#00FF00" if action_status == "BUY" else ("#FFD700" if action_status == "WATCH" else "#888")
+            
+            bet_text = row['BetText']
+            
             def get_color(val): return "sc-high" if val >= 7 else "sc-mid" if val >= 4 else "sc-low"
             c_op = "#00FF00" if row['ChgOpen'] >= 0 else "#FF4444"
             c_pr = "#00FF00" if row['ChgPrev'] >= 0 else "#FF4444"
             is_fav = row['Ticker'] in st.session_state.watchlist
             fav = "❤️" if is_fav else "🤍"
             
-            card_class = "act-buy" if row['Action'] == "BUY" else ("act-watch" if row['Action'] == "WATCH" else "act-ignore")
-            act_badge = "💎 강력 매수" if row['Action'] == "BUY" else ("👀 관심 신호" if row['Action'] == "WATCH" else "💤 조건 부족")
-            act_color = "#00FF00" if row['Action'] == "BUY" else ("#FFD700" if row['Action'] == "WATCH" else "#888")
-            
             badge_html = f"<span class='st-highconv'>📰 News Alert</span>" if row['HighConviction'] else ""
             news_html = f"<div class='news-line'>{row['NewsHeadline']}</div>" if row['HighConviction'] and row['NewsHeadline'] else ""
+            
+            target_disp = "♾️ 무제한" if row['Target'] == 0 else f"${row['Target']:.2f}"
 
-            # [UI Restoration] Fixed HTML indentation for Streamlit (One-liner style to be safe)
-            html_content = f"""<div class="metric-card {card_class}"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div><div style="font-weight:bold; color:{act_color}; font-size:12px; border:1px solid {act_color}; padding:2px 6px; border-radius:4px;">{act_badge}</div></div>{news_html}<div class="price-row"><span class="price-label">현재(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_op}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_pr}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div><div style="margin-top:10px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="ai-desc">💡 {row['Desc']}</div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">점수<br><span class="score-val {get_color(row['Score']/10)}">{row['Score']}</span></div></div><div class="pt-box"><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val" style="color:#00FF00">${row['Target']:.2f}</span></div><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val" style="color:#74b9ff">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val" style="color:#FF4444">${row['Stop']:.2f}</span></div></div><div class="indicator-box">RSI: {row['RSI']:.0f} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"><div class="exit-box"><span style="color:#00FF00; font-weight:bold;">🌊 트레일링 시작: ${row['TrailStop']:.2f}</span><br><span style="color:#FF4444;">🚨 손절(Max): ${row['HardStop']:.2f}</span><br><span style="color:#aaa;">⏳ 기한: {row['TimeStop']}일</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">AI 비중 제안</span><br><span class="bet-badge bet-bg">{row['BetText']}</span></div></div></div>"""
+            html_content = f"""<div class="metric-card {card_class}"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div><div style="font-weight:bold; color:{act_color}; font-size:12px; border:1px solid {act_color}; padding:2px 6px; border-radius:4px;">{act_badge}</div></div>{news_html}<div class="price-row"><span class="price-label">현재(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_op}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_pr}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div><div style="margin-top:10px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="ai-desc">💡 {row['Desc']}</div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">점수<br><span class="score-val {get_color(row['Score']/10)}">{row['Score']}</span></div></div><div class="pt-box"><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val" style="color:#00FF00">{target_disp}</span></div><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val" style="color:#74b9ff">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val" style="color:#FF4444">${row['Stop']:.2f}</span></div></div><div class="indicator-box">RSI: {row['RSI']:.0f} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"><div class="exit-box"><span style="color:#00FF00; font-weight:bold;">🌊 추적 개시: ${row['TrailStop']:.2f}</span><br><span style="color:#FF4444;">🚨 손절(Max): ${row['HardStop']:.2f}</span><br><span style="color:#aaa;">⏳ 기한: {row['TimeStop']}일</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">AI 비중 제안</span><br><span class="bet-badge bet-bg">{bet_text}</span></div></div></div>"""
             
             c1, c2 = st.columns([0.85, 0.15])
             with c2:
@@ -502,34 +594,24 @@ if target_tickers:
             st.markdown(html_content, unsafe_allow_html=True)
             st.plotly_chart(create_chart(row['History'], row['Ticker'], unique_id), use_container_width=True, key=f"chart_{unique_id}", config={'displayModeBar':False})
 
-        if "추천" in mode or "인덱스" in mode:
-            df = pd.DataFrame(market_data)
-            t1, t2, t3 = st.tabs(["🚀 단타 (SCALP)", "🌊 스윙 (SWING)", "🌲 장투 (LONG)"])
-            
-            with t1:
-                cols = st.columns(3)
-                for i, r in enumerate(df[df['Category']=='SCALP'].sort_values('Vol', ascending=False).to_dict('records')):
-                    with cols[i%3]: render_card(r, f"s_{i}")
-            with t2:
-                cols = st.columns(3)
-                for i, r in enumerate(df[df['Category']=='SWING'].sort_values('Squeeze', ascending=False).to_dict('records')):
-                    with cols[i%3]: render_card(r, f"sw_{i}")
-            with t3:
-                cols = st.columns(3)
-                for i, r in enumerate(df[df['Category']=='LONG'].sort_values('Trend', ascending=False).to_dict('records')):
-                    with cols[i%3]: render_card(r, f"l_{i}")
+        t1, t2, t3 = st.tabs(["🚀 단타 (SCALP)", "🌊 스윙 (SWING)", "🌲 장투 (LONG)"])
         
-        else:
-            tab1, tab2 = st.tabs(["📊 대시보드", "💰 투자 리포트"])
-            with tab1:
-                cols = st.columns(3)
-                for i, row in enumerate(market_data):
-                    with cols[i % 3]: render_card(row, f"main_{i}")
-            with tab2:
-                cols = st.columns(3)
-                for i, row in enumerate(market_data):
-                    with cols[i % 3]:
-                        render_card(row, f"list_{i}")
-                        st.json(row['Journal'])
+        scalp_list = [x for x in market_data if x['Category'] == 'SCALP']
+        swing_list = [x for x in market_data if x['Category'] == 'SWING']
+        long_list = [x for x in market_data if x['Category'] == 'LONG']
+        
+        with t1:
+            cols = st.columns(3)
+            for i, r in enumerate(scalp_list):
+                with cols[i%3]: render_card(r, f"s_{i}")
+        with t2:
+            cols = st.columns(3)
+            for i, r in enumerate(swing_list):
+                with cols[i%3]: render_card(r, f"sw_{i}")
+        with t3:
+            cols = st.columns(3)
+            for i, r in enumerate(long_list):
+                with cols[i%3]: render_card(r, f"l_{i}")
+        
     else:
         st.warning("🔍 정말로 조건에 맞는 종목이 하나도 없습니다. (데이터 오류 가능성)")
