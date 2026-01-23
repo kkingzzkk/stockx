@@ -14,7 +14,7 @@ from datetime import datetime, time, timedelta
 FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg"
 
 # === [1. 페이지 설정] ===
-st.set_page_config(page_title="QUANT NEXUS : SURVIVAL MASTER", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT NEXUS : MASTER", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
 # === [2. 세션 및 자금 관리 초기화] ===
 if 'watchlist' not in st.session_state:
@@ -145,11 +145,8 @@ CONFIG = {"MAX_RISK": 0.01}
 @st.cache_data(ttl=120)
 def get_market_data(tickers, effective_nav, consec_loss):
     tickers = list(set(tickers))
-    
     is_halted = True if consec_loss >= 2 else False
-
     data_list = []
-    mkt_code, mkt_label, mkt_class = get_market_status()
     
     def fetch_single(ticker):
         try:
@@ -207,7 +204,7 @@ def get_market_data(tickers, effective_nav, consec_loss):
             
             pcr = 1.0; c_vol = 0; p_vol = 0; 
             call_wall = 100000; put_wall = 0
-            has_option = False # Option Flag
+            has_option = False 
             try:
                 opts = stock.options
                 if opts:
@@ -244,7 +241,6 @@ def get_market_data(tickers, effective_nav, consec_loss):
                 if pcr < 0.7: score += 10 
                 if pcr > 1.3: score -= 20 
             else:
-                # [Final Fix] has_option 체크
                 if has_option:
                     if cur > put_wall: score += 10 
                     if pcr >= 1.2: score += 20 
@@ -273,7 +269,6 @@ def get_market_data(tickers, effective_nav, consec_loss):
                 else:
                     score += 10 
 
-            # [Final Fix] SCALP Target 6%
             target_pct, stop_pct, trail_pct, time_stop_days = 0.05, 0.03, 0.02, 5
             if category == "SCALP": target_pct, stop_pct, trail_pct, time_stop_days = 0.06, 0.05, 0.03, 2
             elif category == "SWING": target_pct, stop_pct, trail_pct, time_stop_days = 0.15, 0.05, 0.04, 10
@@ -283,28 +278,13 @@ def get_market_data(tickers, effective_nav, consec_loss):
             
             if category == "SCALP":
                 stop_price = stop_atr
-                min_stop_level = cur * 0.97 # -3%
+                min_stop_level = cur * 0.97 
             else:
                 stop_price = max(put_wall * 0.99, stop_atr) if (has_option and put_wall < cur) else stop_atr
-                min_stop_level = cur * 0.95 # -5%
+                min_stop_level = cur * 0.95 
             
-            # [Final Fix] 손절가 하드캡: min_stop_level보다 위로 설정되면 안 됨 (X)
-            # 의도: 손절폭이 너무 타이트하면(예: -0.5%), 최소 -3% 정도는 여유를 둬라? (X)
-            # 형님 지적: "ATR이 매우 작은 종목에서 실제 리스크는 1~1.5%인데 강제로 3%로 늘리면 리스크 과대"
-            # 따라서 stop_price(ATR기반)가 min_stop_level(-3%)보다 아래에 있으면(-5%), 그걸 씀.
-            # stop_price가 min_stop_level보다 위에 있으면(-1%), min_stop_level(-3%)로 내림 (X) -> 이러면 손절이 커짐
-            # 
-            # 재해석: "손절은 무조건 -3% 이상 허용 X" = 손실율이 3%를 넘어가면 안된다? (X - 이건 하드스탑)
-            # "최소 3% 유격 확보" = 손절라인이 현재가랑 너무 가까우면(-1%) 휩소에 털리니까 -3%까지 벌려줘라.
-            # 즉, stop_price(-1%) > min_stop_level(-3%). 
-            # 이때 min(-1%, -3%) = -3% (더 넓은 손절 선택).
-            # stop_price(-10%) < min_stop_level(-3%).
-            # min(-10%, -3%) = -10% (더 넓은 손절 선택??) -> 아니, 이건 너무 멂.
-            #
-            # 다시 형님 지적: "stop_price = min(stop_price, min_stop_level) -> -4% vs -3% -> -4% 채택 (더 위험)"
-            # 형님 의도: "손절이 너무 깊으면(-10%) -3%로 제한(방어)" + "손절이 너무 좁으면(-1%) 그대로 -1% 유지(타이트)"
-            # -> 이 경우라면 MAX를 써야 함. max(-10%, -3%) = -3%. max(-1%, -3%) = -1%.
-            # 따라서 제가 Fix 3에서 max로 고친 것이 맞습니다.
+            # [Fix] 손절가 하드캡: 계산된 손절가가 너무 깊으면(-10%), 최소 유격(-3%)선으로 당김.
+            # stop_price(-10%) vs min_stop_level(-3%) -> max 사용 -> -3% 선택 (계좌 보호)
             stop_price = max(stop_price, min_stop_level)
             
             target_calc = cur * (1 + target_pct * 1.5)
@@ -359,7 +339,8 @@ def get_market_data(tickers, effective_nav, consec_loss):
             }
         except: return None
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    max_workers = 3 if len(tickers) > 50 else 5
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(fetch_single, t) for t in tickers]
         for f in concurrent.futures.as_completed(futures):
             res = f.result()
@@ -400,17 +381,31 @@ with st.sidebar:
                 st.session_state.watchlist = set()
                 st.rerun()
                 
-    elif "검색" in mode:
+    elif mode == "🔍 무제한 검색":
         st.info("티커 입력 (예: NVDA, TSLA)")
         search_txt = st.text_input("종목 입력", value="")
         if search_txt: target_tickers = [t.strip().upper() for t in search_txt.split(',')]
         
-    elif "전체" in mode:
-        if st.button("🚀 전체 시장 분석 시작"):
-            st.toast("⚠️ 전체 스캔은 시간이 걸릴 수 있습니다. 잠시만 기다려주세요.", icon="⏳")
-            target_tickers = ALL_TICKERS
-        else:
-            st.info("버튼을 누르면 전체 33개 섹터(600+ 종목)를 정밀 분석합니다.\n(⚠️ 장중에는 API 지연이 발생할 수 있습니다)")
+    elif mode == "🏆 AI 전체 시장 스캔":
+        # [수정] 섹터별 보기 vs TOP 50 보기 분리
+        scan_option = st.radio("스캔 옵션", ["📂 섹터별 보기", "💎 AI 추천 TOP 50"])
+        
+        if scan_option == "📂 섹터별 보기":
+            # [수정] 드래그 방식 삭제 -> Selectbox로 깔끔하게 (전체 포함)
+            sector_list = ["전체(ALL)"] + list(SECTORS.keys())
+            selected_sector = st.selectbox("섹터 선택", sector_list)
+            
+            if st.button("🚀 섹터 분석 시작"):
+                if selected_sector == "전체(ALL)":
+                    st.toast("⚠️ 전체 스캔은 시간이 걸릴 수 있습니다.", icon="⏳")
+                    target_tickers = ALL_TICKERS
+                else:
+                    target_tickers = SECTORS[selected_sector]
+                    
+        else: # TOP 50 모드
+            if st.button("💎 TOP 50 발굴 시작"):
+                st.toast("⚡ 전체 시장 정밀 스캔 중... (잠시만 기다리세요)", icon="🦅")
+                target_tickers = ALL_TICKERS
 
 st.title(f"🇺🇸 {mode}")
 
@@ -422,6 +417,11 @@ if target_tickers:
         if mode != "⭐ 내 관심종목 보기":
             st.warning("데이터를 불러올 수 없습니다.")
     else:
+        # [추가] TOP 50 모드일 경우, 점수순 정렬 후 상위 50개만 자름
+        if mode == "🏆 AI 전체 시장 스캔" and 'scan_option' in locals() and scan_option == "💎 AI 추천 TOP 50":
+            market_data = sorted(market_data, key=lambda x: x['Score'], reverse=True)[:50]
+            st.success(f"💎 전체 시장 중 AI 점수가 가장 높은 상위 {len(market_data)}개를 발굴했습니다.")
+
         def render_card(row, unique_id):
             def get_color(val): return "sc-high" if val >= 7 else "sc-mid" if val >= 4 else "sc-low"
             c_op = "#00FF00" if row['ChgOpen'] >= 0 else "#FF4444"
@@ -432,7 +432,6 @@ if target_tickers:
             badge_html = f"<span class='st-highconv'>📰 News Alert</span>" if row['HighConviction'] else ""
             news_html = f"<div class='news-line'>{row['NewsHeadline']}</div>" if row['HighConviction'] and row['NewsHeadline'] else ""
 
-            # [Final Fix] UI 명칭 변경
             html_content = f"""<div class="metric-card"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div></div>{news_html}<div class="price-row"><span class="price-label">현재(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_op}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_pr}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div><div style="margin-top:10px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="ai-desc">💡 {row['Desc']}</div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">점수<br><span class="score-val {get_color(row['Score']/10)}">{row['Score']}</span></div></div><div class="pt-box"><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val" style="color:#00FF00">${row['Target']:.2f}</span></div><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val" style="color:#74b9ff">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val" style="color:#FF4444">${row['Stop']:.2f}</span></div></div><div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"><div class="exit-box"><span style="color:#00FF00; font-weight:bold;">🌊 트레일링 시작: ${row['TrailStop']:.2f}</span><br><span style="color:#FF4444;">🚨 손절(Max): ${row['HardStop']:.2f}</span><br><span style="color:#aaa;">⏳ 기한: {row['TimeStop']}일</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">AI 비중 제안</span><br><span class="bet-badge bet-bg">{row['BetText']}</span></div></div></div>"""
             
             c1, c2 = st.columns([0.85, 0.15])
