@@ -9,12 +9,12 @@ import requests
 from datetime import datetime, time, timedelta
 
 # ==========================================
-# 🔑 API 설정
+# 🔑 API 설정 (Finnhub)
 # ==========================================
 FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg"
 
 # === [1. 페이지 설정] ===
-st.set_page_config(page_title="QUANT NEXUS : FINAL MASTER", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT NEXUS : MASTER FINAL", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
 # === [2. 관심종목 세션] ===
 if 'watchlist' not in st.session_state:
@@ -40,7 +40,7 @@ def check_recent_news(ticker):
         res = requests.get(url, timeout=2)
         if res.status_code == 200:
             data = res.json()
-            if data and isinstance(data, list):
+            if data and isinstance(data, list) and len(data) > 0:
                 return True, data[0].get('headline', '뉴스 내용 없음')
     except: pass
     return False, None
@@ -49,38 +49,53 @@ def get_timestamp_str():
     ny_tz = pytz.timezone('America/New_York')
     return datetime.now(ny_tz).strftime("%Y-%m-%d %H:%M:%S")
 
-# === [4. 스타일] ===
+# === [4. 스타일 (CSS)] ===
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; }
-    .metric-card { background-color: #1E1E1E; border: 1px solid #444; border-radius: 8px; padding: 15px; margin-bottom: 15px; }
-    .price-row { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; font-size: 13px; border-bottom: 1px solid #333; }
-    .price-val { font-weight: bold; color: white; font-family: monospace; font-size: 13px; }
-    .score-container { display: flex; justify-content: space-between; margin-top: 10px; background-color: #252526; padding: 6px; border-radius: 4px; }
-    .score-item { text-align: center; font-size: 10px; color: #888; width: 24%; }
+    .metric-card { 
+        background-color: #1E1E1E; 
+        border: 1px solid #444; 
+        border-radius: 10px; 
+        padding: 15px; 
+        margin-bottom: 15px; 
+    }
+    .price-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; border-bottom: 1px solid #333; }
+    .price-label { color: #aaa; font-size: 12px; }
+    .price-val { font-weight: bold; color: white; font-family: monospace; font-size: 14px; }
+    
+    .score-container { display: flex; justify-content: space-between; margin-top: 10px; background-color: #252526; padding: 8px; border-radius: 6px; }
+    .score-item { text-align: center; width: 24%; }
+    .score-title { font-size: 10px; color: #888; }
     .score-val { font-weight: bold; font-size: 13px; display: block; margin-top: 2px; }
     .sc-high { color: #00FF00; } .sc-mid { color: #FFD700; } .sc-low { color: #FF4444; }
-    .price-target-box { display: flex; justify-content: space-between; background-color: #151515; padding: 8px; border-radius: 4px; margin-top: 8px; border: 1px dashed #444; }
-    .pt-item { text-align: center; width: 33%; font-size: 12px; }
-    .pt-val { font-weight: bold; font-size: 13px; color: white; }
-    .exit-box { background-color: #2d3436; border-left: 3px solid #636e72; padding: 8px; font-size: 11px; color: #dfe6e9; margin-top: 10px; }
+    
+    .price-target-box { display: flex; justify-content: space-between; background-color: #151515; padding: 10px; border-radius: 6px; margin-top: 10px; border: 1px dashed #444; }
+    .pt-item { text-align: center; width: 33%; }
+    .pt-label { font-size: 10px; color: #aaa; display:block; }
+    .pt-val { font-weight: bold; font-size: 13px; }
+    
+    .exit-box { background-color: #2d3436; border-left: 3px solid #636e72; padding: 8px; font-size: 11px; color: #dfe6e9; margin-top: 10px; border-radius: 0 4px 4px 0; }
+    
     .ticker-header { font-size: 18px; font-weight: bold; color: #00CCFF; text-decoration: none !important; }
-    .badge { padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: bold; color: white; margin-left: 5px; }
-    .news-line { color: #ffa502; font-size: 12px; margin-top: 4px; padding: 4px; background-color: #2d2d2d; border-radius: 4px; display: block; border-left: 3px solid #ffa502; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .badge { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; color: white; margin-left: 5px; vertical-align: middle; }
+    
+    .news-line { color: #ffa502; font-size: 12px; margin-top: 8px; padding: 5px; background-color: #2d2d2d; border-radius: 4px; display: block; border-left: 3px solid #ffa502; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .ai-desc { font-size: 11px; color: #ccc; margin-top: 5px; font-style: italic; text-align: center; }
     
-    /* Strategy Badges */
-    .st-gamma { background-color: #6c5ce7; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-    .st-squeeze { background-color: #0984e3; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-    .st-value { background-color: #00b894; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-    .st-dip { background-color: #e17055; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-    .st-none { background-color: #333; color: #777; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+    /* Strategy Colors */
+    .st-gamma { background-color: #6c5ce7; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+    .st-squeeze { background-color: #0984e3; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+    .st-value { background-color: #00b894; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+    .st-dip { background-color: #e17055; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+    .st-none { background-color: #333; color: #777; padding: 3px 8px; border-radius: 4px; font-size: 11px; }
     .st-highconv { background-color: #e17055; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; margin-left: 5px; }
-    .mkt-pre { background-color: #d29922; color: black; } .mkt-reg { background-color: #238636; } .mkt-aft { background-color: #1f6feb; } .mkt-cls { background-color: #6e7681; }
+    
+    .mkt-pre { background-color: #d29922; } .mkt-reg { background-color: #238636; } .mkt-aft { background-color: #1f6feb; } .mkt-cls { background-color: #6e7681; }
 </style>
 """, unsafe_allow_html=True)
 
-# === [5. 27개 섹터 (레버리지 2종 추가됨)] ===
+# === [5. 27개 섹터 데이터 (레버리지 2종 포함)] ===
 SECTORS = {
     "01. 🔥 지수 레버리지 (2x/3x)": ["TQQQ", "SQQQ", "SOXL", "SOXS", "UPRO", "SPXU", "TMF", "TMV", "LABU", "LABD", "FNGU", "FNGD", "BULZ", "BERZ", "YINN", "YANG", "UVXY", "BOIL", "KOLD"],
     "02. 💣 개별주 레버리지 (2x/3x)": ["NVDL", "NVDS", "TSLL", "TSLQ", "AMZU", "AAPU", "GOOX", "MSFU", "CONL", "MSTX", "MSTY", "BITX", "NVDX", "BABX"],
@@ -88,7 +103,7 @@ SECTORS = {
     "04. Semiconductors": ["NVDA", "TSM", "AVGO", "AMD", "INTC", "ASML", "AMAT", "LRCX", "MU", "QCOM", "ADI", "TXN", "MRVL", "KLAC", "NXPI", "STM", "ON", "MCHP", "MPWR", "TER", "ENTG", "SWKS", "QRVO", "WOLF", "COHR", "IPGP", "LSCC", "RMBS", "FORM", "ACLS", "CAMT", "UCTT", "ICHR", "AEHR", "GFS"],
     "05. Rare Earth & Strategic": ["MP", "UUUU", "LAC", "ALTM", "SGML", "PLL", "LTHM", "REMX", "TMC", "NB", "TMQ", "TMRC", "UAMY", "AREC", "IDR", "RIO", "BHP", "VALE", "FCX", "SCCO", "AA", "CENX", "KALU", "CRS", "ATI", "HAYW", "LYC.AX", "ARU.AX", "ASM.AX"],
     "06. Weight Loss & Bio": ["LLY", "NVO", "AMGN", "PFE", "VKTX", "ALT", "ZP", "GILD", "BMY", "JNJ", "ABBV", "MRK", "BIIB", "REGN", "VRTX", "MRNA", "BNTX", "NVS", "AZN", "SNY", "ALNY", "SRPT", "BMRN", "INCY", "UTHR", "GERN", "CRSP", "EDIT", "NTLA", "BEAM", "SAGE", "ITCI", "AXSM"],
-    "07. Fintech & Crypto": ["COIN", "MSTR", "HOOD", "SQ", "PYPL", "SOFI", "AFRM", "UPST", "MARA", "RIOT", "CLSK", "HUT", "WULF", "CIFR", "IREN", "CORZ", "SDIG", "GREE", "BITF", "V", "MA", "AXP", "DFS", "COF", "NU", "DAVE", "LC", "GLBE", "BILL", "TOST", "MQ", "FOUR"],
+    "07. Fintech & Crypto": ["COIN", "MSTR", "HOOD", "SQ", "PYPL", "SOFI", "AFRM", "UPST", "MARA", "RIOT", "CLSK", "HUT", "WULF", "CIFR", "BTBT", "IREN", "CORZ", "SDIG", "GREE", "BITF", "V", "MA", "AXP", "DFS", "COF", "NU", "DAVE", "LC", "GLBE", "BILL", "TOST", "MQ", "FOUR"],
     "08. Defense & Space": ["RTX", "LMT", "NOC", "GD", "BA", "LHX", "HII", "LDOS", "AXON", "KTOS", "AVAV", "RKLB", "SPCE", "ASTS", "LUNR", "PL", "SPIR", "BKSY", "VSAT", "IRDM", "JOBY", "ACHR"],
     "09. Uranium & Nuclear": ["CCJ", "UUUU", "NXE", "UEC", "DNN", "SMR", "BWXT", "LEU", "OKLO", "FLR", "URA", "CEG", "VST", "XOM", "CVX", "SLB", "OXY", "VLO", "HAL", "MPC"],
     "10. Consumer & Luxury": ["LVMUY", "RACE", "NKE", "LULU", "ONON", "DECK", "CROX", "SKX", "RL", "TPR", "CPRI", "EL", "COTY", "ULTA", "ELF", "WMT", "COST", "TGT", "HD", "LOW", "SBUX", "MCD", "CMG", "KO", "PEP"],
@@ -103,7 +118,7 @@ SECTORS = {
     "19. Energy (Oil & Gas)": ["XOM", "CVX", "COP", "SLB", "EOG", "MPC", "OXY", "PSX", "VLO", "HAL", "BKR", "HES", "DVN", "FANG", "MRO", "APA", "CTRA", "PXD", "WMB", "KMI", "OKE", "TRGP", "LNG", "EQT", "RRC", "SWN", "CHK", "MTDR", "PDCE", "CIVI"],
     "20. Renewables": ["ENPH", "SEDG", "FSLR", "NEE", "BEP", "RUN", "ARRY", "CSIQ", "DQ", "JKS", "MAXN", "SPWR", "NOVA", "SHLS", "GEV", "CWEN", "AY", "HASI", "ORA", "TPIC", "BLDP", "PLUG", "FCEL", "BE", "STEM", "TAN", "ICLN"],
     "21. Gold & Miners": ["GOLD", "NEM", "KL", "AU", "GDX", "GDXJ", "AEM", "FNV", "WPM", "KGC", "PAAS", "MAG", "SAND", "OR", "PHYS", "HMY", "GFI", "IAG", "NGD", "EGO", "DRD", "SBSW", "CDE", "HL", "AG", "EXK", "FSM", "MUX", "USAS", "GORO"],
-    "22. Industrial": ["UPS", "FDX", "CAT", "DE", "HON", "GE", "MMM", "UNP", "EMR", "ITW", "PH", "ETN", "URI", "PWR"],
+    "22. Industrial": ["UPS", "FDX", "CAT", "DE", "HON", "GE", "MMM", "UNP", "EMR", "ITW", "PH", "ETN", "NSC", "CSX", "CMI", "ROK", "AME", "DOV", "XYL", "TT", "CARR", "OTIS", "JCI", "LII", "GWW", "FAST", "URI", "PWR", "EME", "ACM"],
     "23. Real Estate (REITs)": ["AMT", "PLD", "CCI", "EQIX", "O", "DLR", "WELL", "SPG", "VICI", "PSA"],
     "24. Travel & Leisure": ["BKNG", "ABNB", "MAR", "HLT", "RCL", "CCL", "DAL", "UAL", "LUV", "EXPE", "TRIP", "MGM", "LVS", "DKNG"],
     "25. Food & Beverage": ["PEP", "KO", "MDLZ", "MNST", "HSY", "KDP", "GIS", "K", "SBUX", "CMG", "MCD", "YUM", "DPZ"],
@@ -145,9 +160,9 @@ def get_market_data(tickers):
     def fetch_single(ticker):
         try:
             stock = yf.Ticker(ticker)
-            # [핵심 수정] 데이터 검증 완화 (최소 5일치만 있으면 OK) -> "데이터 오류" 해결
+            # [수정] 데이터 검증 완화 (최소 2일치면 OK) -> 레버리지/신규주 에러 방지
             hist_day = stock.history(period="1y") 
-            if hist_day.empty or len(hist_day) < 5: return None
+            if hist_day.empty or len(hist_day) < 2: return None
             
             hist_rt = stock.history(period="1d", interval="1m", prepost=True)
             cur = hist_rt['Close'].iloc[-1] if not hist_rt.empty else hist_day['Close'].iloc[-1]
@@ -163,7 +178,6 @@ def get_market_data(tickers):
             lower_bb = ma20 - (std20 * 2)
             bbw = (upper_bb - lower_bb) / ma20
             
-            # 안전장치: rank 계산 시 NaN 방지
             bbw_val = bbw.rank(pct=True).iloc[-1]
             sc_squeeze = (1 - (bbw_val if not np.isnan(bbw_val) else 0.5)) * 10
             
@@ -179,7 +193,7 @@ def get_market_data(tickers):
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean().iloc[-1]
             rsi = 100 - (100 / (1 + gain/(loss if loss != 0 else 0.0001)))
             
-            # Options
+            # Options Check
             pcr = 1.0; c_vol = 0; p_vol = 0; sc_option = 5.0
             try:
                 opts = stock.options
@@ -241,9 +255,9 @@ def get_market_data(tickers):
                 try: news_ok, news_hl = check_recent_news(ticker)
                 except: pass
 
-            # [핵심 수정] 익절라인(TrailStop) > 현재가 보장
+            # [핵심 수정] 익절라인(TrailStop)은 무조건 현재가보다 위(+)에 있어야 함
             tgt_val = cur * (1 + target_pct)
-            trl_val = cur * (1 + trail_pct)  # Plus!
+            trl_val = cur * (1 + trail_pct)  # +로 수정 완료
             stp_val = cur * (1 - stop_pct)
 
             # 비중 계산
@@ -305,7 +319,7 @@ with st.sidebar:
                 st.rerun()
                 
     elif "섹터" in mode:
-        # [수정] 드래그 X -> Selectbox(드롭다운) O
+        # [수정] 드래그 방식 삭제 -> 드롭다운(Selectbox) 적용
         selected_sector = st.selectbox("섹터 선택", list(SECTORS.keys()))
         target_tickers = SECTORS[selected_sector]
         
@@ -331,8 +345,9 @@ if target_tickers:
     
     if not market_data:
         if mode != "⭐ 내 관심종목 보기":
-            st.warning("데이터를 불러올 수 없습니다. (시장 휴장 또는 데이터 부족)")
+            st.warning("데이터를 불러올 수 없습니다.")
     else:
+        # [렌더링 함수: 이미지 깨짐 방지]
         def render_card(row, unique_id):
             def get_color(val): return "sc-high" if val >= 7 else "sc-mid" if val >= 4 else "sc-low"
             color_open = "#00FF00" if row['ChgOpen'] >= 0 else "#FF4444"
@@ -341,7 +356,7 @@ if target_tickers:
             fav_icon = "❤️" if is_fav else "🤍"
             
             badge_html = "<span class='st-highconv'>🔥 High Conviction</span>" if row['HighConviction'] else ""
-            news_html = f"<span class='news-line'>📰 {row['NewsHeadline']}</span>" if row['NewsHeadline'] else ""
+            news_html = f"<span class='news-line'>📰 {row['NewsHeadline']}</span>" if row['HighConviction'] and row['NewsHeadline'] else ""
 
             html_content = f"""<div class="metric-card">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
@@ -390,7 +405,7 @@ if target_tickers:
                     st.rerun()
             
             st.markdown(html_content, unsafe_allow_html=True)
-            # [수정] Key Error 방지 (unique_id 활용)
+            # [수정] unique_id를 활용하여 이미지 깨짐(Key 충돌) 방지
             st.plotly_chart(create_chart(row['History'], row['Ticker'], unique_id), use_container_width=True, key=f"chart_{unique_id}", config={'displayModeBar':False})
 
         # [AI 추천 포트폴리오 탭 복구]
