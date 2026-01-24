@@ -9,24 +9,28 @@ import requests
 from datetime import datetime, time, timedelta
 
 # ==========================================
-# 🔑 API 설정 (Finnhub)
+# 🔑 API & CONSTANTS
 # ==========================================
-FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg"
+try:
+    FINNHUB_API_KEY = st.secrets["FINNHUB_API_KEY"]
+except:
+    FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg"
+
+# [0] 불변의 법칙
+MAX_RAW_SCORE = 25
+MIN_FILL_SCORE = 5 
+MAX_RISK = 0.01
 
 # === [1. 페이지 설정] ===
-st.set_page_config(page_title="QUANT NEXUS : GOLD MASTER", page_icon="🏆", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT NEXUS : HEDGE FUND", page_icon="🏛️", layout="wide", initial_sidebar_state="expanded")
 
-# === [2. 세션 및 자금 관리 초기화] ===
-if 'watchlist' not in st.session_state:
-    st.session_state.watchlist = set()
-if 'REAL_NAV' not in st.session_state:
-    st.session_state.REAL_NAV = 10000.0  
-if 'REAL_LOSS' not in st.session_state:
-    st.session_state.REAL_LOSS = 0.0     
-if 'CONSEC_LOSS' not in st.session_state:
-    st.session_state.CONSEC_LOSS = 0
+# === [2. 세션 초기화] ===
+if 'watchlist' not in st.session_state: st.session_state.watchlist = set()
+if 'scan_option' not in st.session_state: st.session_state.scan_option = "💎 AI 추천 TOP 50"
+if 'REAL_NAV' not in st.session_state: st.session_state.REAL_NAV = 10000.0  
+if 'CONSEC_LOSS' not in st.session_state: st.session_state.CONSEC_LOSS = 0
 
-# === [3. 유틸리티 & 레짐 판독] ===
+# === [3. 유틸리티] ===
 def get_market_status():
     ny_tz = pytz.timezone('America/New_York')
     now_ny = datetime.now(ny_tz)
@@ -42,26 +46,15 @@ def get_market_regime():
     try:
         spy = yf.Ticker("SPY").history(period="1y")
         vix = yf.Ticker("^VIX").history(period="5d")
-        
-        if spy.empty or vix.empty: return "NEUTRAL", 65
-        
+        if spy.empty: return "NEUTRAL"
         spy_cur = spy['Close'].iloc[-1]
         spy_ma200 = spy['Close'].rolling(200).mean().iloc[-1]
-        vix_cur = vix['Close'].iloc[-1]
+        vix_cur = vix['Close'].iloc[-1] if not vix.empty else 20
         
-        regime_score = 5
-        if spy_cur > spy_ma200: regime_score += 3
-        else: regime_score -= 3
-        
-        if vix_cur < 15: regime_score += 2
-        elif vix_cur > 25: regime_score -= 2
-        
-        if regime_score >= 7: return "BULL", 75
-        elif regime_score >= 4: return "NEUTRAL", 65
-        else: return "BEAR", 55 
-        
-    except:
-        return "NEUTRAL", 65
+        if spy_cur > spy_ma200 and vix_cur < 20: return "BULL"
+        elif spy_cur < spy_ma200 or vix_cur > 25: return "BEAR"
+        return "NEUTRAL"
+    except: return "NEUTRAL"
 
 @st.cache_data(ttl=300) 
 def check_recent_news(ticker):
@@ -78,22 +71,20 @@ def check_recent_news(ticker):
     except: pass
     return False, None
 
-def get_timestamp_str():
-    ny_tz = pytz.timezone('America/New_York')
-    return datetime.now(ny_tz).strftime("%Y-%m-%d %H:%M:%S")
-
 def calculate_rsi(series, period=14):
+    if len(series) < period: period = max(1, len(series) - 1)
+    if period < 1: return pd.Series([50]*len(series))
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# === [4. 스타일 (UI 깨짐 방지 완벽 적용)] ===
+# === [4. 스타일] ===
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; }
-    .metric-card { background-color: #1E1E1E; border: 1px solid #444; border-radius: 8px; padding: 15px; margin-bottom: 15px; position: relative; }
+    .metric-card { background-color: #1E1E1E; border: 1px solid #444; border-radius: 8px; padding: 15px; margin-bottom: 15px; position: relative; transition: all 0.3s ease; }
     .price-row { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; border-bottom: 1px solid #333; font-size: 13px; }
     .price-label { color: #aaa; font-size: 11px; }
     .price-val { font-weight: bold; color: white; font-family: monospace; font-size: 13px; }
@@ -101,14 +92,7 @@ st.markdown("""
     .score-item { text-align: center; font-size: 10px; color: #888; width: 19%; }
     .score-val { font-weight: bold; font-size: 13px; display: block; margin-top: 2px; }
     .sc-high { color: #00FF00; } .sc-mid { color: #FFD700; } .sc-low { color: #FF4444; }
-    
     .indicator-box { background-color: #252526; border-radius: 4px; padding: 6px; margin-top: 8px; font-size: 11px; color: #ccc; text-align: center; border: 1px solid #333; }
-    .opt-row { display: flex; justify-content: space-between; font-size: 11px; margin-top: 4px; font-weight: bold; }
-    .opt-call { color: #00FF00; } .opt-put { color: #FF4444; }
-    .opt-bar-bg { background-color: #333; height: 5px; border-radius: 2px; overflow: hidden; display: flex; margin-top: 3px; }
-    .opt-bar-c { background-color: #00FF00; height: 100%; }
-    .opt-bar-p { background-color: #FF4444; height: 100%; }
-
     .pt-box { display: flex; justify-content: space-between; background-color: #151515; padding: 8px; border-radius: 4px; margin-top: 8px; border: 1px dashed #444; }
     .pt-item { text-align: center; width: 33%; font-size: 12px; }
     .pt-label { color: #aaa; font-size: 10px; display: block; }
@@ -116,22 +100,19 @@ st.markdown("""
     .exit-box { background-color: #2d3436; border-left: 3px solid #636e72; padding: 8px; font-size: 11px; color: #dfe6e9; margin-top: 10px; }
     .bet-badge { font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 4px; color: black; float: right; margin-top: 5px; }
     .bet-bg { background-color: #74b9ff; }
-    .ticker-header { font-size: 18px; font-weight: bold; color: #00CCFF; text-decoration: none !important; }
-    .badge { padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: bold; color: white; margin-left: 5px; vertical-align: middle;}
-    .mkt-pre { background-color: #d29922; color: black; } .mkt-reg { background-color: #238636; color: white; } .mkt-aft { background-color: #1f6feb; color: white; } .mkt-cls { background-color: #6e7681; color: white; }
     
-    .act-buy { border: 2px solid #00FF00 !important; box-shadow: 0 0 15px rgba(0,255,0,0.15); } 
+    .act-sbuy { border: 2px solid #00FF00 !important; box-shadow: 0 0 15px rgba(0,255,0,0.3); } 
+    .act-buy { border: 1px solid #00FF00 !important; }
     .act-watch { border: 1px solid #FFD700 !important; } 
-    .act-ignore { border: 1px solid #444 !important; opacity: 0.7; }
+    .act-fill { border: 1px solid #333 !important; opacity: 0.4; filter: grayscale(100%); }
+    .act-ignore { border: 1px solid #333 !important; opacity: 0.3; }
     
     .st-gamma { background-color: #6c5ce7; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block; }
     .st-squeeze { background-color: #0984e3; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block; }
     .st-value { background-color: #00b894; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block; }
     .st-dip { background-color: #e17055; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block; }
     .st-none { background-color: #333; color: #777; padding: 2px 6px; border-radius: 4px; font-size: 11px; display:inline-block; }
-    .st-highconv { background-color: #e17055; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; margin-left: 5px; }
     .news-line { color: #ffa502; font-size: 12px; margin-top: 4px; padding: 4px; background-color: #2d2d2d; border-radius: 4px; display: block; border-left: 3px solid #ffa502; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .ai-desc { font-size: 11px; color: #ccc; margin-top: 5px; font-style: italic; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -171,76 +152,42 @@ SECTORS = {
 }
 ALL_TICKERS = sorted(list(set([ticker for s in SECTORS.values() for ticker in s])))
 
-# === [6. 설정값 (실전용)] ===
-CONFIG = {"MAX_RISK": 0.01} 
-
 # === [7. 엔진: Logic Core] ===
-# [CRITICAL] CACHE DISABLED
-def get_market_data(tickers, effective_nav, consec_loss):
+def get_market_data_raw(tickers):
     tickers = list(set(tickers))
-    
-    # [Tilt Control] 3회 연속 손실 시 매매 중단
-    if consec_loss >= 3:
-        return [] 
-        
     data_list = []
-    
-    # [REGIME CHECK]
-    regime, base_cut = get_market_regime()
-    
-    # [REGIME CONFIGURATION]
-    if regime == "BULL":
-        regime_risk_mult = 1.5  
-        stop_width_mult = 1.2   
-        target_cap = None       
-        time_limit = 20         
-    elif regime == "BEAR":
-        regime_risk_mult = 0.5  
-        stop_width_mult = 0.8   
-        target_cap = 0.06       
-        time_limit = 3          
-    else:
-        regime_risk_mult = 1.0
-        stop_width_mult = 1.0
-        target_cap = 0.10
-        time_limit = 5
+    regime = get_market_regime()
+    ny_tz = pytz.timezone("America/New_York")
     
     def fetch_single(ticker):
         try:
-            # [FIX 1] Define is_halted LOCALLY to prevent Crash
-            is_halted = True if consec_loss >= 3 else False
-            
             mkt_code, mkt_label, mkt_class = get_market_status()
-            
             stock = yf.Ticker(ticker)
+            
+            cur = None
+            try: cur = stock.fast_info.last_price
+            except: pass
+            
+            hist_rt_1m = pd.DataFrame()
+            if cur is None or np.isnan(cur):
+                try:
+                    hist_rt_1m = stock.history(period="1d", interval="1m", prepost=True)
+                    if not hist_rt_1m.empty: cur = hist_rt_1m['Close'].iloc[-1]
+                except: pass
+            
             hist_day = stock.history(period="1y") 
             if hist_day.empty or len(hist_day) < 20: return None
+            if cur is None or np.isnan(cur): cur = hist_day['Close'].iloc[-1]
+                
+            hist_rt_5m = stock.history(period="1d", interval="5m", prepost=False)
             
-            hist_rt = stock.history(period="1d", interval="5m", prepost=False)
-            if hist_rt.empty: 
-                hist_rt = hist_day 
-                cur = hist_day['Close'].iloc[-1]
-                rsi_intra = 50 
-                last_time = datetime.now(pytz.timezone('America/New_York')).time()
-            else:
-                cur = hist_rt['Close'].iloc[-1]
-                last_dt = hist_rt.index[-1]
-                if last_dt.tzinfo is None:
-                    last_dt = pytz.utc.localize(last_dt).astimezone(pytz.timezone('America/New_York'))
-                else:
-                    last_dt = last_dt.astimezone(pytz.timezone('America/New_York'))
-                last_time = last_dt.time()
-
-                if len(hist_rt) < 20:
-                    rsi_intra = 50 
-                else:
-                    rsi_intra = calculate_rsi(hist_rt['Close']).iloc[-1]
-                    if np.isnan(rsi_intra): rsi_intra = 50
+            rsi_intra = None
+            if not hist_rt_5m.empty:
+                rsi_intra = calculate_rsi(hist_rt_5m['Close']).iloc[-1]
+                if np.isnan(rsi_intra): rsi_intra = None
 
             open_p = hist_day['Open'].iloc[-1]
             prev_c = hist_day['Close'].iloc[-2]
-            
-            # [Fix Missing Variables]
             diff_open = cur - open_p
             chg_open = (diff_open / open_p) * 100 if open_p > 0 else 0
             diff_prev = cur - prev_c
@@ -262,211 +209,154 @@ def get_market_data(tickers, effective_nav, consec_loss):
             if cur > ma20.iloc[-1]: sc_trend += 5
             if len(ma200) > 0 and cur > ma200.iloc[-1]: sc_trend += 5
             
-            # [FIX] Volume Logic
             vol_avg = hist_day['Volume'].rolling(5).mean().iloc[-1]
             if vol_avg > 0:
-                if not hist_rt.empty:
-                    vol_ratio = hist_rt['Volume'].sum() / vol_avg
-                else:
-                    vol_ratio = hist_day['Volume'].iloc[-1] / vol_avg
-            else:
-                vol_ratio = 1.0
+                if not hist_rt_5m.empty: vol_ratio = hist_rt_5m['Volume'].sum() / vol_avg
+                else: vol_ratio = hist_day['Volume'].iloc[-1] / vol_avg
+            else: vol_ratio = 1.0
             
-            sc_vol = min(10, vol_ratio * 3)
+            sc_vol_ui = min(5, vol_ratio * 2)
             
-            # [FIX 2] ATR NaN Defense
             hist_day['TR'] = np.maximum(hist_day['High'] - hist_day['Low'], 
                                         np.maximum(abs(hist_day['High'] - hist_day['Close'].shift(1)), 
                                                    abs(hist_day['Low'] - hist_day['Close'].shift(1))))
             atr = hist_day['TR'].rolling(14).mean().iloc[-1]
-            if pd.isna(atr) or atr <= 0:
-                atr = cur * 0.03 # Default to 3%
+            if pd.isna(atr) or atr <= 0: atr = cur * 0.03
 
             rsi_day = calculate_rsi(hist_day['Close']).iloc[-1]
-            if np.isnan(rsi_day): rsi_day = 50
+            if np.isnan(rsi_day): rsi_day = None 
             
             pcr = 1.0; c_vol = 0; p_vol = 0; 
-            call_wall = 100000; put_wall = 0
-            has_option = False 
+            call_wall = cur; put_wall = cur 
+            has_option = False; score_option = 0
+            
             try:
                 opts = stock.options
-                # [FIX 3] Option Chain Safety
                 if opts and len(opts) > 0:
                     try:
                         chain = stock.option_chain(opts[0])
-                        c_vol = chain.calls['volume'].sum(); p_vol = chain.puts['volume'].sum()
-                        if c_vol > 0: pcr = p_vol / c_vol
-                        call_wall = chain.calls.sort_values('openInterest', ascending=False).iloc[0]['strike']
-                        put_wall = chain.puts.sort_values('openInterest', ascending=False).iloc[0]['strike']
-                        has_option = True
-                    except:
-                        has_option = False
+                        c_cols = chain.calls.columns
+                        p_cols = chain.puts.columns
+                        
+                        c_oi_col = 'openInterest' if 'openInterest' in c_cols else 'oi' if 'oi' in c_cols else None
+                        p_oi_col = 'openInterest' if 'openInterest' in p_cols else 'oi' if 'oi' in p_cols else None
+                        
+                        if 'volume' in c_cols and c_oi_col and p_oi_col:
+                            c_vol = chain.calls['volume'].sum(); p_vol = chain.puts['volume'].sum()
+                            if c_vol > 0: pcr = p_vol / c_vol
+                            
+                            calls_oi = chain.calls[abs(chain.calls['strike'] - cur) / cur < 0.05]
+                            puts_oi = chain.puts[abs(chain.puts['strike'] - cur) / cur < 0.05]
+                            
+                            if not calls_oi.empty: call_wall = calls_oi.sort_values(c_oi_col, ascending=False).iloc[0]["strike"]
+                            if not puts_oi.empty: put_wall = puts_oi.sort_values(p_oi_col, ascending=False).iloc[0]["strike"]
+                            has_option = True
+                    except: has_option = False
             except: pass
+            
+            if has_option and (c_vol + p_vol) > 0:
+                c_pct = (c_vol / (c_vol + p_vol)) * 100; p_pct = 100 - c_pct
+            else: c_pct, p_pct = 50, 50
 
             category = "NONE"; strat_name = "관망"; strat_class = "st-none"; desc = "조건 부족"
+            score_penalty = 0 
             
             # [CLASSIFICATION]
-            if cur > (upper_bb.iloc[-1] * 0.95) and vol_ratio > 1.0: 
-                if rsi_intra > 85: 
-                    category = "NONE"; strat_name = "🚫 단기 과열"; strat_class = "st-none"
-                    desc = f"장중 RSI {rsi_intra:.0f} 과열"
-                else:
+            # [FIX 3] RSI fallback to Day if Intra is None
+            rsi_check = rsi_intra if rsi_intra is not None else rsi_day
+            
+            if cur > (upper_bb.iloc[-1] * 0.98): 
+                # [FIX 3] Strict Scalp Check
+                if rsi_check is not None and rsi_check > 78: 
+                    category = "SWING"; strat_name = "⏸️ 과열 (대기)"; strat_class = "st-dip"
+                    desc = f"RSI {rsi_check:.0f} 과열 → 눌림 대기"
+                    score_penalty = -3 
+                elif vol_ratio > 1.2:
                     category = "SCALP"; strat_name = "🚀 수급 돌파"; strat_class = "st-gamma"
-                    desc = f"거래량 폭발({vol_ratio:.1f}배) + 밴드 상단 돌파"
+                    desc = f"거래량 {vol_ratio:.1f}배 + 밴드 터치"
+            
+            # [FIX 3] Gap Pump Check
+            elif vol_ratio > 2.0 and chg_open > 2.0:
+                 if rsi_check is not None and rsi_check < 75: # Added Safety
+                     category = "SCALP"; strat_name = "⚡ 급등 포착"; strat_class = "st-gamma"
+                 else:
+                     category = "NONE"; desc = "과열 갭상승"
 
             elif sc_squeeze > 2.0: 
                 category = "SWING"; strat_name = "🌊 에너지 응축"; strat_class = "st-squeeze"
-                desc = "변동성 극소화, 시세 분출 임박"
-            elif cur <= lower_bb.iloc[-1] and rsi_day < 35: 
+                desc = "변동성 극소화"
+            elif cur <= lower_bb.iloc[-1] and (rsi_day is not None and rsi_day < 35): 
                 category = "SWING"; strat_name = "🛡️ 과매도 반등"; strat_class = "st-dip"
-                desc = f"일봉 RSI {rsi_day:.0f} 과매도."
-            elif cur > ma20.iloc[-1] and (len(ma200) > 0 and cur > ma200.iloc[-1]) and 50 < rsi_day < 70:
+                desc = f"일봉 RSI {rsi_day:.0f} 과매도"
+            elif cur > ma20.iloc[-1] and (rsi_day is not None and 50 < rsi_day < 70):
                 category = "LONG"; strat_name = "💎 대세 상승"; strat_class = "st-value"
-                desc = "이평선 정배열 + 안정적 우상향"
+                desc = "이평선 정배열"
+            
+            if regime == "BEAR" and category == "LONG":
+                category = "NONE"; strat_name = "관망"; strat_class = "st-none"
+                desc = "하락장 장기투자 금지"
 
             # --- [SCORING SYSTEM] ---
             score = 0
-            if category == "SCALP": score = 35 
-            elif category == "SWING" or category == "LONG": score = 30
-            else: score = 20 
-
-            if has_option:
-                if category != "SCALP" and cur >= put_wall * 0.98: score += 10 
-                if pcr >= 1.1: score += 5
-            else:
-                score += 10 
+            score_news = 0
             
-            if regime == "BULL":
-                if vol_ratio > 1.5: score += 10 
-                if sc_trend >= 8: score += 10   
-                
-            if vol_ratio > 1.2: score += 10 
-            if sc_squeeze > 5: score += 10
-            if 40 <= rsi_day <= 70: score += 10 
+            if category == "LONG": score += 10
+            elif category == "SWING": score += 8 
+            elif category == "SCALP": score += 8 
+            else: score = 0
             
-            if category == "SCALP": score = min(score, 85)
-
+            raw_option_bonus = 0
+            if has_option and score >= 8:
+                raw_option_bonus = 3 
+                if cur > put_wall: score_option += 3
+                if pcr >= 1.2: score_option += 3
+                # [FIX 4] Option Risk Penalty
+                if pcr > 1.8: score_penalty -= 2
+            
+            score_vol = 0
+            if vol_ratio > 1.5: score_vol += 3
+            if sc_trend >= 5: score_vol += 2
+            
+            if sc_squeeze > 5: score += 3
+            
             news_ok = False; news_hl = None
-            if vol_ratio >= 3.0 and score >= 35: 
+            if score >= 5: 
                 try: news_ok, news_hl = check_recent_news(ticker)
                 except: pass
-            
-            if category == "SCALP" and news_ok:
-                score += 5 
-                desc = "뉴스 호재 + 수급 (주목)"
+            if news_ok: score_news = 8 
 
-            if category == "NONE" and score >= 25:
-                category = "SWING"
-                score += 10 
-                strat_name = "🔍 잠재력 관찰"
-                strat_class = "st-none"
-                desc = "뚜렷한 패턴 없으나 점수 양호"
+            if regime == "BEAR" and category == "SWING" and not news_ok:
+                score_penalty -= 3
 
-            # [BEAR FILTER]
-            if regime == "BEAR" and rsi_day < 25:
-                score = min(score, 30) 
-                desc = f"⚠️ RSI {rsi_day:.0f} 극단적 과매도 (진입 주의)"
+            raw_score = score + score_news + score_vol + score_penalty
+            raw_score = min(raw_score, MAX_RAW_SCORE)
 
-            # [CUTOFF LOGIC]
-            cut_signal, cut_buy = 25, 40 
-            if regime == "BEAR": cut_buy = 42
-            if category == "SCALP": cut_buy += 5
-            elif category == "LONG": cut_buy += 10
-            
-            if category == "SWING" and consec_loss >= 2:
-                score -= 10
-
-            action_status = "IGNORE"
-            if score >= cut_buy: action_status = "BUY"
-            elif score >= cut_signal: action_status = "WATCH"
-            
-            if action_status == "PASS": action_status = "WATCH"
-
-            # [RISK PARAMETERS]
-            target_pct = 0.05
-            stop_pct = 0.03 * stop_width_mult
-            trail_pct = 0.02 * stop_width_mult
-            
-            if regime == "BULL":
-                trail_pct = 0.05 
-                time_stop_days = 20 
-                target_pct = 999.0 
-            elif regime == "BEAR":
-                trail_pct = 0.015 
-                time_stop_days = 3 
-                if target_cap: target_pct = min(target_pct, target_cap)
+            stop_atr = cur - atr * 1.5
+            if category == "SCALP": 
+                stop_price = max(stop_atr, cur * 0.97) 
             else:
-                time_stop_days = 5
-
-            stop_atr = cur - atr * 1.5 * stop_width_mult
-            if category == "SCALP":
-                stop_price = stop_atr
-                min_stop_level = cur * (1 - 0.03 * stop_width_mult)
-            else:
-                stop_price = max(put_wall * 0.99, stop_atr) if (has_option and put_wall < cur) else stop_atr
-                min_stop_level = cur * (1 - 0.05 * stop_width_mult)
+                if has_option and abs(put_wall - cur)/cur < 0.05:
+                    stop_price = max(put_wall * 0.99, stop_atr)
+                else: stop_price = stop_atr
             
             if category == "SWING": stop_price = max(stop_price, cur * 0.96)
-            stop_price = max(stop_price, min_stop_level)
+            stop_price = max(stop_price, cur * 0.90)
             
-            target_price = cur * (1 + target_pct * 1.5) if target_pct != 999.0 else 0
-            trail_price = cur * (1 + trail_pct) 
-            
-            risk_per_share = max(cur - stop_price, cur * 0.01) 
-            
-            risk_amt = effective_nav * CONFIG["MAX_RISK"] * regime_risk_mult
-            tilt_factor = 0.0 if is_halted else 0.8 ** consec_loss 
-            
-            multiplier = 0.0
-            qty = 0
-            
-            if action_status == "BUY": 
-                if score >= 70: multiplier = 0.6
-                elif score >= 55: multiplier = 0.4
-                elif score >= 40: multiplier = 0.2
-                
-                if multiplier == 0: multiplier = 0.2
-                if category == "SWING": multiplier = min(multiplier, 0.3)
-                if regime == "BEAR" and news_ok: multiplier *= 0.7
-
-                final_risk = risk_amt * multiplier * tilt_factor
-                qty = int(final_risk / risk_per_share)
-                if qty == 0: qty = 1 
-            
-            bet_text = "❌ 관망"
-            if is_halted: bet_text = "⛔ 매매 금지"
-            elif action_status == "WATCH": bet_text = "👀 관망 (Signal)"
-            elif action_status == "IGNORE": bet_text = "💤 조건 부족"
-            elif action_status == "BUY": bet_text = f"💎 매수: {qty}주"
-
-            journal_txt = {
-                "Ticker": ticker, "Strategy": strat_name, "Entry": round(cur, 2), 
-                "Score": score, "Time": get_timestamp_str()
-            }
-            
-            c_pct = (c_vol / (c_vol+p_vol) * 100) if (c_vol+p_vol) > 0 else 50
-            p_pct = (p_vol / (c_vol+p_vol) * 100) if (c_vol+p_vol) > 0 else 50
-
             return {
                 "Ticker": ticker, "Price": cur, "Category": category, "StratName": strat_name, "StratClass": strat_class,
-                "Squeeze": sc_squeeze, "Trend": sc_trend, "Vol": sc_vol, "Option": 0, "Desc": desc,
-                "Score": score, "Ma20": ma20.iloc[-1],
-                "Target": target_price, "Stop": stop_price, 
-                "HardStop": stop_price, "TrailStop": trail_price, "TimeStop": time_stop_days,
-                "Journal": journal_txt, "History": hist_day['Close'],
-                "ChgOpen": chg_open, "ChgPrev": chg_prev, "DiffOpen": diff_open, "DiffPrev": diff_prev,
+                "Squeeze": sc_squeeze, "Trend": sc_trend, "Vol": sc_vol_ui, "OptionScore": score_option, "Desc": desc, 
+                "RawScore": raw_score, "Stop": stop_price, "RawOptionBonus": raw_option_bonus, 
+                "History": hist_day['Close'].tail(30).values,
+                "ChgOpen": chg_open, "ChgPrev": chg_prev, 
+                "DiffOpen": diff_open, "DiffPrev": diff_prev, 
                 "RSI": rsi_day, "PCR": pcr, "CallVol": c_vol, "PutVol": p_vol, "CallPct": c_pct, "PutPct": p_pct,
-                "MktLabel": mkt_label, "MktClass": mkt_class, "HighConviction": news_ok, "NewsHeadline": news_hl,
-                "RiskPerShare": risk_per_share,
-                "Action": action_status, # [CRITICAL] Added for UI Safety
-                "BetText": bet_text      # [CRITICAL] Added for UI Safety
+                "MktLabel": mkt_label, "MktClass": mkt_class, 
+                "HighConviction": news_ok, "NewsHeadline": news_hl,
+                "Regime": regime
             }
-        except Exception as e:
-            print(f"❌ {ticker} Error: {e}") 
-            return None
+        except Exception: return None
     
-    # [FIX 4] Balanced Workers (4 is safe/fast enough)
-    max_workers = 4
+    max_workers = 4 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(fetch_single, t) for t in tickers]
         for f in concurrent.futures.as_completed(futures):
@@ -474,8 +364,112 @@ def get_market_data(tickers, effective_nav, consec_loss):
             if res: data_list.append(res)
     return data_list
 
+# [Step 2] Normalize & Fill
+def process_market_data(data, effective_nav, consec_loss):
+    if not data: return []
+    
+    valid = [x for x in data if x['RawScore'] > 0]
+    regime = data[0]['Regime'] if data else "NEUTRAL"
+    
+    if valid:
+        raws = np.array([x['RawScore'] for x in valid])
+        if len(raws) > 1:
+            mu = raws.mean()
+            # [FIX 2] Mean Shift in Bear
+            if regime == "BEAR": mu += 3 
+            sigma = max(raws.std(), 3.5) + 1e-6
+            for item in data:
+                if item['RawScore'] <= 0:
+                    item['Score'] = 0
+                else:
+                    z = (item['RawScore'] - mu) / sigma
+                    item['Score'] = int(100 / (1 + np.exp(-z)))
+                    
+                    if item.get('RawOptionBonus', 0) > 0:
+                        item['Score'] = int(item['Score'] * 1.05)
+                    
+                    item['Score'] = max(5, min(item['Score'], 100))
+        else:
+            for item in data: item['Score'] = 50 if item['RawScore'] > 0 else 0
+    else:
+        for item in data: item['Score'] = 0
+
+    for item in data:
+        s = item['Score']
+        raw = item['RawScore']
+        
+        min_raw = 11 if regime == "BEAR" else 7 
+        s_buy_cut = 999 if regime == "BEAR" else 80
+        buy_cut = 70 if regime == "BEAR" else 60
+        
+        if regime == "BEAR": s = s * 0.85 
+        item['Score'] = int(s)
+        
+        if raw < min_raw: item['Action'] = "IGNORE"
+        elif s >= s_buy_cut: item['Action'] = "S_BUY"
+        elif s >= buy_cut: item['Action'] = "BUY"
+        elif s >= 40: item['Action'] = "WATCH"
+        else: item['Action'] = "IGNORE"
+        
+        if item['Category'] == "NONE": item['Action'] = "IGNORE"
+
+        cur = item['Price']; stop = item['Stop']
+        
+        if item['Category'] == "SCALP":
+            target_pct = 0.03; trail_pct = 0.01; item['TimeStop'] = 1
+        else:
+            target_pct = 0.15 if regime == "BULL" else 0.05
+            trail_pct = 0.05 if regime == "BULL" else 0.02
+            item['TimeStop'] = 20 if regime == "BULL" else 5
+
+        item['Target'] = cur * (1 + target_pct)
+        item['TrailStart'] = cur * (1 + trail_pct)
+        item['HardStop'] = stop
+        
+        risk_per_share = max(cur - stop, cur * 0.01)
+        item['RiskPerShare'] = risk_per_share
+        
+        risk_amt = effective_nav * MAX_RISK
+        
+        multiplier = 0.0
+        if item['Action'] == "S_BUY": multiplier = 0.6
+        elif item['Action'] == "BUY": multiplier = 0.4
+        if regime == "BEAR": multiplier = min(multiplier, 0.15)
+        
+        # [FIX 5] Recovery Mode
+        if consec_loss >= 3: 
+            if item['Score'] >= 85: multiplier = 0.1 # Recovery Shot
+            else: multiplier = 0.0
+        
+        qty = 0
+        if multiplier > 0: qty = int((risk_amt * multiplier) / risk_per_share)
+        
+        if consec_loss >= 3 and multiplier == 0: item['BetText'] = "⛔ 멘탈 보호"
+        elif qty > 0: item['BetText'] = f"💎 매수: {qty}주"
+        elif item['Action'] == "WATCH": item['BetText'] = "👀 관망"
+        else: item['BetText'] = "💤 조건 부족"
+
+    qualified = [x for x in data if x['Action'] != "IGNORE"]
+    rest = [x for x in data if x['Action'] == "IGNORE"]
+    rest = sorted(rest, key=lambda x: x['RawScore'], reverse=True)
+    
+    final_list = qualified
+    if len(final_list) < 50:
+        needed = 50 - len(final_list)
+        # [FIX 1] Strict Filter for Fillers
+        fillers = [x for x in rest if x['RawScore'] >= MIN_FILL_SCORE and x['Category'] != "NONE"]
+        f_add = fillers[:needed]
+        for f in f_add:
+            f['Action'] = "FILL"
+            f['BetText'] = "⚠️ 보충 (Rank)"
+        final_list.extend(f_add)
+    
+    final_list = sorted(final_list, key=lambda x: (x['Action'] == "FILL", -x['Score']))
+    return final_list[:50]
+
 def create_chart(data, ticker, unique_id):
-    color = '#00FF00' if data.iloc[-1] >= data.iloc[0] else '#FF4444'
+    if len(data) < 2: return go.Figure()
+    color = '#00FF00' if data[-1] >= data[0] else '#FF4444'
     fig = go.Figure(go.Scatter(y=data, mode='lines', line=dict(color=color, width=2), fill='tozeroy'))
     fig.update_layout(height=50, margin=dict(l=0,r=0,t=0,b=0), xaxis=dict(visible=False), yaxis=dict(visible=False), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     return fig
@@ -483,51 +477,32 @@ def create_chart(data, ticker, unique_id):
 # === [8. UI 메인] ===
 with st.sidebar:
     st.title("🪟 KOREAN MASTER")
+    st.info("🏛️ 상태: 헤지펀드 (Hedge Fund)")
     
-    st.markdown("### 💰 자금 관리 (Risk Management)")
-    st.session_state.REAL_NAV = st.number_input("초기 원금 ($)", value=st.session_state.REAL_NAV, step=1000.0)
-    st.session_state.REAL_LOSS = st.number_input("누적 실현 손실 ($)", value=st.session_state.REAL_LOSS, step=100.0)
-    st.session_state.CONSEC_LOSS = st.number_input("연속 손실 횟수 (Tilt)", value=st.session_state.CONSEC_LOSS, step=1, min_value=0)
-    
-    effective_nav = max(st.session_state.REAL_NAV - st.session_state.REAL_LOSS, 1000)
-    st.info(f"⚡ 운용 가능 자금: ${effective_nav:,.0f}")
-    
-    if st.session_state.CONSEC_LOSS >= 2:
-        st.error(f"🚨 [경고] 연속 손실 {st.session_state.CONSEC_LOSS}회. 리스크 가중치 70% 적용.")
-    if st.session_state.CONSEC_LOSS >= 3:
-        st.error(f"⛔ [매매 중단] 연속 손실 {st.session_state.CONSEC_LOSS}회. 뇌동매매 방지를 위해 진입 차단.")
-    
-    mode = st.radio("분석 모드", ["🏆 AI 전체 시장 스캔", "🔍 무제한 검색", "⭐ 내 관심종목 보기"])
+    mode = st.radio("분석 모드", ["🏆 AI 랭킹 (TOP 50)", "🔍 무제한 검색", "⭐ 내 관심종목 보기"])
+    if 'scan_option' not in st.session_state: st.session_state.scan_option = "💎 AI 추천 TOP 50"
     
     target_tickers = []
-    
     if mode == "⭐ 내 관심종목 보기":
-        if not st.session_state.watchlist:
-            st.warning("관심종목이 없습니다.")
+        if not st.session_state.watchlist: st.warning("관심종목이 없습니다.")
         else:
             target_tickers = list(st.session_state.watchlist)
             if st.button("🗑️ 전체 삭제"):
-                st.session_state.watchlist = set()
-                st.rerun()
-                
+                st.session_state.watchlist = set(); st.rerun()
     elif mode == "🔍 무제한 검색":
         st.info("티커 입력 (예: NVDA, TSLA)")
         search_txt = st.text_input("종목 입력", value="")
         if search_txt: target_tickers = [t.strip().upper() for t in search_txt.split(',')]
-        
-    elif mode == "🏆 AI 전체 시장 스캔":
-        scan_option = st.radio("스캔 옵션", ["📂 섹터별 보기", "💎 AI 추천 TOP 50"])
-        
-        if scan_option == "📂 섹터별 보기":
+    elif mode == "🏆 AI 랭킹 (TOP 50)":
+        st.session_state.scan_option = st.radio("스캔 옵션", ["📂 섹터별 보기", "💎 AI 추천 TOP 50"])
+        if st.session_state.scan_option == "📂 섹터별 보기":
             sector_list = ["전체(ALL)"] + list(SECTORS.keys())
             selected_sector = st.radio("섹터 선택", sector_list)
-            
             if st.button("🚀 섹터 분석 시작"):
-                if selected_sector == "전체(ALL)":
+                if selected_sector == "전체(ALL)": 
                     st.toast("⚠️ 전체 스캔은 시간이 걸릴 수 있습니다.", icon="⏳")
                     target_tickers = ALL_TICKERS
-                else:
-                    target_tickers = SECTORS[selected_sector]
+                else: target_tickers = SECTORS[selected_sector]
         else:
             if st.button("💎 TOP 50 발굴 시작"):
                 st.toast("⚡ 전체 시장 정밀 스캔 중... (잠시만 기다리세요)", icon="🦅")
@@ -537,52 +512,60 @@ st.title(f"🇺🇸 {mode}")
 
 if target_tickers:
     with st.spinner(f"AI 정밀 분석 중... ({len(target_tickers)} 종목)"):
-        market_data = get_market_data(target_tickers, effective_nav, st.session_state.CONSEC_LOSS)
+        raw_data = get_market_data_raw(target_tickers)
+        market_data = process_market_data(raw_data, st.session_state.REAL_NAV, st.session_state.CONSEC_LOSS)
     
     if market_data:
-        regime, base_cut = get_market_regime()
+        regime = market_data[0]['Regime']
+        scores = [x['Score'] for x in market_data]
         
-        if regime == "BULL":
-            st.success(f"🚀 BULL MARKET (공격 모드) | 기본 컷: {base_cut}점 | 익절 무제한")
-        elif regime == "BEAR":
-            st.error(f"🐻 BEAR MARKET (생존 모드) | 기본 컷: {base_cut}점 | 리스크 축소")
-        else:
-            st.warning(f"⚖️ NEUTRAL MARKET (중립 모드) | 기본 컷: {base_cut}점")
+        if scores:
+            max_s = max(scores) if scores else 100
+            st.caption(f"📊 최종 점수 분포 (Max: {max_s})")
+            hist_values = np.histogram(scores, bins=20, range=(0, max_s if max_s > 0 else 100))[0]
+            st.bar_chart(hist_values)
+            st.info(f"📏 판단 기준 ({regime}): ⭐ S_BUY(≥80) | ✅ BUY(≥60) | 👀 WATCH(≥40) | ⚠️ FILL")
 
-        def sort_key(x):
-            priority = {"BUY": 3, "WATCH": 2, "IGNORE": 1}
-            return (priority.get(x['Action'], 0), x['Score'])
-        
-        market_data = sorted(market_data, key=sort_key, reverse=True)
-        
-        # [FIX 5] Logic Separation
-        if mode == "🏆 AI 전체 시장 스캔" and 'scan_option' in locals() and scan_option == "💎 AI 추천 TOP 50":
-            market_data = sorted(market_data, key=lambda x: x['Score'], reverse=True)[:50]
-            
-        st.caption(f"🔎 분석 완료: {len(market_data)}개 종목 (정렬: BUY > WATCH > IGNORE)")
+        if regime == "BULL": st.success(f"🚀 BULL MARKET")
+        elif regime == "BEAR": st.error(f"🐻 BEAR MARKET (Score Penalized)")
+        else: st.warning(f"⚖️ NEUTRAL MARKET")
+
+        st.caption(f"🔎 분석 완료: {len(market_data)}개 종목")
 
         def render_card(row, unique_id):
             action_status = row['Action']
-            score = row['Score']
             
-            card_class = "act-buy" if action_status == "BUY" else ("act-watch" if action_status == "WATCH" else "act-ignore")
-            act_badge = "💎 강력 매수" if action_status == "BUY" else ("👀 관심 신호" if action_status == "WATCH" else "💤 관망")
-            act_color = "#00FF00" if action_status == "BUY" else ("#FFD700" if action_status == "WATCH" else "#888")
+            if action_status == "S_BUY": card_class = "act-sbuy"; act_badge = "⭐ 최우선"; act_color = "#00FF00"
+            elif action_status == "BUY": card_class = "act-buy"; act_badge = "✅ 매수"; act_color = "#00FF00"
+            elif action_status == "WATCH": card_class = "act-watch"; act_badge = "👀 관망"; act_color = "#FFD700"
+            elif action_status == "FILL": card_class = "act-fill"; act_badge = "⚠️ 보충"; act_color = "#aaa"
+            else: card_class = "act-ignore"; act_badge = "💤 제외"; act_color = "#888"
             
             bet_text = row['BetText']
-            
-            def get_color(val): return "sc-high" if val >= 7 else "sc-mid" if val >= 4 else "sc-low"
             c_op = "#00FF00" if row['ChgOpen'] >= 0 else "#FF4444"
             c_pr = "#00FF00" if row['ChgPrev'] >= 0 else "#FF4444"
             is_fav = row['Ticker'] in st.session_state.watchlist
             fav = "❤️" if is_fav else "🤍"
-            
             badge_html = f"<span class='st-highconv'>📰 News Alert</span>" if row['HighConviction'] else ""
             news_html = f"<div class='news-line'>{row['NewsHeadline']}</div>" if row['HighConviction'] and row['NewsHeadline'] else ""
             
-            target_disp = "♾️ 무제한" if row['Target'] == 0 else f"${row['Target']:.2f}"
+            # [FIX 1] Hide details for FILL
+            if action_status == "FILL":
+                target_disp = "---"
+                stop_disp = "---"
+            else:
+                target_disp = f"${row['Target']:.2f}"
+                stop_disp = f"${row['Stop']:.2f}"
+            
+            rsi_disp = f"{row['RSI']:.0f}" if row['RSI'] is not None else "N/A"
+            time_unit = "거래일" if row['TimeStop'] > 1 else "일"
 
-            html_content = f"""<div class="metric-card {card_class}"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div><div style="font-weight:bold; color:{act_color}; font-size:12px; border:1px solid {act_color}; padding:2px 6px; border-radius:4px;">{act_badge}</div></div>{news_html}<div class="price-row"><span class="price-label">현재(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_op}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_pr}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div><div style="margin-top:10px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="ai-desc">💡 {row['Desc']}</div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">점수<br><span class="score-val {get_color(row['Score']/10)}">{row['Score']}</span></div></div><div class="pt-box"><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val" style="color:#00FF00">{target_disp}</span></div><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val" style="color:#74b9ff">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val" style="color:#FF4444">${row['Stop']:.2f}</span></div></div><div class="indicator-box">RSI: {row['RSI']:.0f} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"><div class="exit-box"><span style="color:#00FF00; font-weight:bold;">🌊 추적 개시: ${row['TrailStop']:.2f}</span><br><span style="color:#FF4444;">🚨 손절(Max): ${row['HardStop']:.2f}</span><br><span style="color:#aaa;">⏳ 기한: {row['TimeStop']}일</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">AI 비중 제안</span><br><span class="bet-badge bet-bg">{bet_text}</span></div></div></div>"""
+            def get_color(val): 
+                if val >= 7: return "sc-high"
+                elif val >= 4: return "sc-mid"
+                return "sc-low"
+
+            html_content = f"""<div class="metric-card {card_class}"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div><div style="font-weight:bold; color:{act_color}; font-size:12px; border:1px solid {act_color}; padding:2px 6px; border-radius:4px;">{act_badge}</div></div>{news_html}<div class="price-row"><span class="price-label">현재(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_op}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_pr}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div><div style="margin-top:10px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="ai-desc">💡 {row['Desc']}</div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">옵션<br><span class="score-val {get_color(row['OptionScore'])}">{row['OptionScore']}</span></div></div><div class="pt-box"><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val" style="color:#00FF00">{target_disp}</span></div><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val" style="color:#74b9ff">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val" style="color:#FF4444">{stop_disp}</span></div></div><div class="indicator-box">RSI: {rsi_disp} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"><div class="exit-box"><span style="color:#00FF00; font-weight:bold;">🌊 트레일 시작: ${row['TrailStart']:.2f}</span><br><span style="color:#FF4444;">🚨 손절(Max): ${row['HardStop']:.2f}</span><br><span style="color:#aaa;">⏳ 기한: {row['TimeStop']}{time_unit}</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">AI 비중 제안</span><br><span class="bet-badge bet-bg">{bet_text}</span></div></div></div>"""
             
             c1, c2 = st.columns([0.85, 0.15])
             with c2:
@@ -612,6 +595,5 @@ if target_tickers:
             cols = st.columns(3)
             for i, r in enumerate(long_list):
                 with cols[i%3]: render_card(r, f"l_{i}")
-        
     else:
-        st.warning("🔍 정말로 조건에 맞는 종목이 하나도 없습니다. (데이터 오류 가능성)")
+        st.warning("🔍 데이터 수집 실패 (API 또는 네트워크 확인)")
