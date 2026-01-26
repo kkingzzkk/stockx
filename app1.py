@@ -153,7 +153,8 @@ SECTORS = {
 ALL_TICKERS = sorted(list(set([ticker for s in SECTORS.values() for ticker in s])))
 
 # === [7. 엔진: Logic Core] ===
-def get_market_data_raw(tickers):
+# [FIXED: Renamed to v2 to clear cache and fix KeyError]
+def get_market_data_v2(tickers):
     tickers = list(set(tickers))
     data_list = []
     regime = get_market_regime()
@@ -164,24 +165,23 @@ def get_market_data_raw(tickers):
             mkt_code, mkt_label, mkt_class = get_market_status()
             stock = yf.Ticker(ticker)
             
-            # [FIXED: 24H Price Reflection] 
-            # 프리/애프터 시세를 최우선으로 반영하기 위해 1분봉 데이터 먼저 확인
+            # [FIXED: 24H Price Sync]
             cur = None
-            try: 
+            try:
+                # 1. Try 1m History with Prepost (Most Accurate)
                 ext_hist = stock.history(period="1d", interval="1m", prepost=True)
                 if not ext_hist.empty:
                     cur = ext_hist['Close'].iloc[-1]
             except: pass
             
-            # Fallback to fast_info if history fails
+            # 2. Try Fast Info (Fallback 1)
             if cur is None or np.isnan(cur):
                 try: cur = stock.fast_info.last_price
                 except: cur = None
             
+            # 3. Try Daily History (Fallback 2)
             hist_day = stock.history(period="1y") 
             if hist_day.empty or len(hist_day) < 20: return None
-            
-            # Final Fallback to Daily Close
             if cur is None or np.isnan(cur): cur = hist_day['Close'].iloc[-1]
                 
             hist_rt_5m = stock.history(period="1d", interval="5m", prepost=False)
@@ -231,9 +231,9 @@ def get_market_data_raw(tickers):
             rsi_day = calculate_rsi(hist_day['Close']).iloc[-1]
             if np.isnan(rsi_day): rsi_day = None 
             
-            pcr = 1.0; c_vol = 0; p_vol = 0; 
-            call_wall = cur; put_wall = cur 
-            has_option = False; score_option = 0
+            # [FIX: Variable Init for Safety]
+            has_option = False; score_option = 0; pcr = 1.0; call_wall = cur; put_wall = cur
+            c_vol = 0; p_vol = 0; c_pct = 50; p_pct = 50
             
             try:
                 opts = stock.options
@@ -242,13 +242,23 @@ def get_market_data_raw(tickers):
                         chain = stock.option_chain(opts[0])
                         c_cols = chain.calls.columns
                         p_cols = chain.puts.columns
+                        
                         c_oi_col = 'openInterest' if 'openInterest' in c_cols else 'oi' if 'oi' in c_cols else None
                         p_oi_col = 'openInterest' if 'openInterest' in p_cols else 'oi' if 'oi' in p_cols else None
+                        
                         if 'volume' in c_cols and c_oi_col and p_oi_col:
                             c_vol = chain.calls['volume'].sum(); p_vol = chain.puts['volume'].sum()
                             if c_vol > 0: pcr = p_vol / c_vol
+                            
+                            # [FIX: Calc PCT]
+                            total_opt = c_vol + p_vol
+                            if total_opt > 0:
+                                c_pct = (c_vol / total_opt) * 100
+                                p_pct = 100 - c_pct
+                            
                             calls_oi = chain.calls[abs(chain.calls['strike'] - cur) / cur < 0.05]
                             puts_oi = chain.puts[abs(chain.puts['strike'] - cur) / cur < 0.05]
+                            
                             if not calls_oi.empty: call_wall = calls_oi.sort_values(c_oi_col, ascending=False).iloc[0]["strike"]
                             if not puts_oi.empty: put_wall = puts_oi.sort_values(p_oi_col, ascending=False).iloc[0]["strike"]
                             has_option = True
@@ -256,64 +266,97 @@ def get_market_data_raw(tickers):
             except: pass
             
             if has_option and (c_vol + p_vol) > 0:
-                c_pct = (c_vol / (c_vol + p_vol)) * 100; p_pct = 100 - c_pct
-            else: c_pct, p_pct = 50, 50
-
+                pass # Already calc above
+            
             category = "NONE"; strat_name = "관망"; strat_class = "st-none"; desc = "조건 부족"
             score_penalty = 0 
             rsi_check = rsi_intra if rsi_intra is not None else rsi_day
             
             if cur > (upper_bb.iloc[-1] * 0.98): 
                 if rsi_check is not None and rsi_check > 78: 
-                    category = "SWING"; strat_name = "⏸️ 과열 (대기)"; strat_class = "st-dip"; score_penalty = -3 
+                    category = "SWING"; strat_name = "⏸️ 과열 (대기)"; strat_class = "st-dip"
+                    desc = f"RSI {rsi_check:.0f} 과열 → 눌림 대기"
+                    score_penalty = -3 
                 elif vol_ratio > 1.2:
                     category = "SCALP"; strat_name = "🚀 수급 돌파"; strat_class = "st-gamma"
                     desc = f"거래량 {vol_ratio:.1f}배 + 밴드 터치"
+            
             elif vol_ratio > 2.0 and chg_open > 2.0:
                  if rsi_check is not None and rsi_check < 75:
                      category = "SCALP"; strat_name = "⚡ 급등 포착"; strat_class = "st-gamma"
-            elif sc_squeeze > 2.0: category = "SWING"; strat_name = "🌊 에너지 응축"; strat_class = "st-squeeze"
+                 else:
+                     category = "NONE"; desc = "과열 갭상승"
+
+            elif sc_squeeze > 2.0: 
+                category = "SWING"; strat_name = "🌊 에너지 응축"; strat_class = "st-squeeze"
+                desc = "변동성 극소화"
             elif cur <= lower_bb.iloc[-1] and (rsi_day is not None and rsi_day < 35): 
                 category = "SWING"; strat_name = "🛡️ 과매도 반등"; strat_class = "st-dip"
+                desc = f"일봉 RSI {rsi_day:.0f} 과매도"
             elif cur > ma20.iloc[-1] and (rsi_day is not None and 50 < rsi_day < 70):
                 category = "LONG"; strat_name = "💎 대세 상승"; strat_class = "st-value"
+                desc = "이평선 정배열"
             
-            if regime == "BEAR" and category == "LONG": category = "NONE"
+            if regime == "BEAR" and category == "LONG":
+                category = "NONE"; strat_name = "관망"; strat_class = "st-none"
+                desc = "하락장 장기투자 금지"
 
+            # --- [SCORING SYSTEM] ---
             score = 0
+            score_news = 0
+            
             if category == "LONG": score += 10
             elif category == "SWING": score += 8 
             elif category == "SCALP": score += 6 
+            else: score = 0
             
-            has_option_bonus = False
+            raw_option_bonus = 0
             if has_option and score >= 5:
-                if cur > put_wall and pcr >= 1.2: has_option_bonus = True; score_option += 3
+                if cur > put_wall and pcr >= 1.2: 
+                    score_option += 3
+                    raw_option_bonus = 3
+                if pcr > 1.8: score_penalty -= 2
             
-            score_vol = 3 if vol_ratio > 1.5 else 0
+            score_vol = 0
+            if vol_ratio > 1.5: score_vol += 3
             if sc_trend >= 5: score_vol += 2
+            
             if sc_squeeze > 5: score += 3
             
-            news_ok, news_hl = False, None
+            news_ok = False; news_hl = None
             if score >= 5: 
-                news_ok, news_hl = check_recent_news(ticker)
-                if news_ok: score += 8 
+                try: news_ok, news_hl = check_recent_news(ticker)
+                except: pass
+            if news_ok: score_news = 8 
 
-            if regime == "BEAR" and category == "SWING" and not news_ok: score_penalty -= 3
+            if regime == "BEAR" and category == "SWING" and not news_ok:
+                score_penalty -= 3
 
-            raw_score = min(score + score_vol + score_penalty, MAX_RAW_SCORE)
+            raw_score = score + score_news + score_vol + score_penalty
+            raw_score = min(raw_score, MAX_RAW_SCORE)
 
             stop_atr = cur - atr * 1.5
-            stop_price = max(stop_atr, cur * 0.97) if category == "SCALP" else (max(put_wall * 0.99, stop_atr) if (has_option and abs(put_wall - cur)/cur < 0.05) else stop_atr)
+            if category == "SCALP": 
+                stop_price = max(stop_atr, cur * 0.97) 
+            else:
+                if has_option and abs(put_wall - cur)/cur < 0.05:
+                    stop_price = max(put_wall * 0.99, stop_atr)
+                else: stop_price = stop_atr
+            
+            if category == "SWING": stop_price = max(stop_price, cur * 0.96)
             stop_price = max(stop_price, cur * 0.90)
             
             return {
                 "Ticker": ticker, "Price": cur, "Category": category, "StratName": strat_name, "StratClass": strat_class,
                 "Squeeze": sc_squeeze, "Trend": sc_trend, "Vol": sc_vol_ui, "OptionScore": score_option, "Desc": desc, 
-                "RawScore": raw_score, "Stop": stop_price, "HasOptionBonus": has_option_bonus, 
-                "History": hist_day['Close'].tail(30).values, "ChgOpen": chg_open, "ChgPrev": chg_prev, 
-                "DiffOpen": diff_open, "DiffPrev": diff_prev, "RSI": rsi_day, "PCR": pcr, 
-                "CallVol": c_vol, "PutVol": p_vol, "CallPct": c_pct, "PutPct": p_pct,
-                "MktLabel": mkt_label, "MktClass": mkt_class, "HighConviction": news_ok, "NewsHeadline": news_hl, "Regime": regime
+                "RawScore": raw_score, "Stop": stop_price, "RawOptionBonus": raw_option_bonus, 
+                "History": hist_day['Close'].tail(30).values,
+                "ChgOpen": chg_open, "ChgPrev": chg_prev, 
+                "DiffOpen": diff_open, "DiffPrev": diff_prev, 
+                "RSI": rsi_day, "PCR": pcr, "CallVol": c_vol, "PutVol": p_vol, "CallPct": c_pct, "PutPct": p_pct,
+                "MktLabel": mkt_label, "MktClass": mkt_class, 
+                "HighConviction": news_ok, "NewsHeadline": news_hl,
+                "Regime": regime
             }
         except Exception: return None
     
@@ -328,6 +371,7 @@ def get_market_data_raw(tickers):
 # [Step 2] Normalize & Fill
 def process_market_data(data, effective_nav, consec_loss):
     if not data: return []
+    
     valid = [x for x in data if x['RawScore'] > 0]
     regime = data[0]['Regime'] if data else "NEUTRAL"
     
@@ -338,11 +382,15 @@ def process_market_data(data, effective_nav, consec_loss):
             if regime == "BEAR": mu += 3 
             sigma = max(raws.std(), 3.5) + 1e-6
             for item in data:
-                if item['RawScore'] <= 0: item['Score'] = 0
+                if item['RawScore'] <= 0:
+                    item['Score'] = 0
                 else:
                     z = (item['RawScore'] - mu) / sigma
                     item['Score'] = int(100 / (1 + np.exp(-z)))
-                    if item.get('HasOptionBonus', False): item['Score'] = int(item['Score'] * 1.05)
+                    
+                    if item.get('RawOptionBonus', 0) > 0:
+                        item['Score'] = int(item['Score'] * 1.05)
+                    
                     item['Score'] = max(5, min(item['Score'], 100))
         else:
             for item in data: item['Score'] = 50 if item['RawScore'] > 0 else 0
@@ -352,9 +400,11 @@ def process_market_data(data, effective_nav, consec_loss):
     for item in data:
         s = item['Score']
         raw = item['RawScore']
+        
         min_raw = 11 if regime == "BEAR" else 7 
         s_buy_cut = 999 if regime == "BEAR" else 80
         buy_cut = 70 if regime == "BEAR" else 60
+        
         if regime == "BEAR": s = s * 0.85 
         item['Score'] = int(s)
         
@@ -370,35 +420,49 @@ def process_market_data(data, effective_nav, consec_loss):
             item['Action'] = "WATCH"
             item['BetText'] = "👀 하락장 관망"
 
-        # Position Sizing
-        target_pct = 0.03 if item['Category'] == "SCALP" else (0.15 if regime == "BULL" else 0.05)
-        item['Target'] = item['Price'] * (1 + target_pct)
-        item['TrailStart'] = item['Price'] * (1 + target_pct * 0.5)
+        cur = item['Price']; stop = item['Stop']
+        
+        if item['Category'] == "SCALP":
+            target_pct = 0.03; trail_pct = 0.01; item['TimeStop'] = 1
+        else:
+            target_pct = 0.15 if regime == "BULL" else 0.05
+            trail_pct = 0.05 if regime == "BULL" else 0.02
+            item['TimeStop'] = 20 if regime == "BULL" else 5
+
+        item['Target'] = cur * (1 + target_pct)
+        item['TrailStart'] = cur * (1 + trail_pct)
+        item['HardStop'] = stop
+        
+        risk_per_share = max(cur - stop, cur * 0.01)
+        item['RiskPerShare'] = risk_per_share
         
         risk_amt = effective_nav * MAX_RISK
-        multiplier = 0.6 if item['Action'] == "S_BUY" else (0.4 if item['Action'] == "BUY" else 0.0)
-        if regime == "BEAR": multiplier = min(multiplier, 0.15)
-        if consec_loss >= 3: 
-            if item['Score'] >= 85: multiplier = 0.1
-            else: multiplier = 0.0
         
-        risk_per_share = max(item['Price'] - item['Stop'], item['Price'] * 0.01)
-        qty = int((risk_amt * multiplier) / risk_per_share) if multiplier > 0 else 0
+        multiplier = 0.0
+        if item['Action'] == "S_BUY": multiplier = 0.6
+        elif item['Action'] == "BUY": multiplier = 0.4
+        if regime == "BEAR": multiplier = min(multiplier, 0.15)
+        if consec_loss >= 2: multiplier *= 0.5
+        if consec_loss >= 3: multiplier = 0.0
+        
+        # Recovery
+        if consec_loss >= 3 and item['Score'] >= 85: multiplier = 0.1
+        
+        qty = int((risk_amt * multiplier) / risk_per_share)
         
         if consec_loss >= 3 and multiplier == 0: item['BetText'] = "⛔ 멘탈 보호"
         elif qty > 0: item['BetText'] = f"💎 매수: {qty}주"
         elif item['Action'] == "WATCH": item['BetText'] = "👀 관망"
         else: item['BetText'] = "💤 조건 부족"
-        item['TimeStop'] = 1 if item['Category'] == "SCALP" else (20 if regime == "BULL" else 5)
 
     qualified = [x for x in data if x['Action'] != "IGNORE"]
-    rest = [x for x in data if x['Action'] == "IGNORE" and x['Category'] != "NONE" and x['RawScore'] >= MIN_FILL_SCORE]
+    rest = [x for x in data if x['Action'] == "IGNORE"]
     rest = sorted(rest, key=lambda x: x['RawScore'], reverse=True)
     
     final_list = qualified
     if len(final_list) < 50:
         needed = 50 - len(final_list)
-        # [FIX 1] Strict Filter for Fillers
+        # [FIX: Strict Fill]
         fillers = [x for x in rest if x['RawScore'] >= MIN_FILL_SCORE and x['Category'] != "NONE"]
         f_add = fillers[:needed]
         for f in f_add:
@@ -406,8 +470,7 @@ def process_market_data(data, effective_nav, consec_loss):
             f['BetText'] = "⚠️ 보충 (Rank)"
         final_list.extend(f_add)
     
-    final_list = sorted(final_list, key=lambda x: (x['Action'] == "FILL", -x['Score']))
-    return final_list[:50]
+    return sorted(final_list, key=lambda x: (x['Action'] == "FILL", -x['Score']))[:50]
 
 def create_chart(data, ticker, unique_id):
     if len(data) < 2: return go.Figure()
@@ -419,7 +482,7 @@ def create_chart(data, ticker, unique_id):
 # === [8. UI 메인] ===
 with st.sidebar:
     st.title("🪟 KOREAN MASTER")
-    st.info("🏛️ 상태: 헤지펀드 (24H SYNC)")
+    st.info("🏛️ 상태: 헤지펀드 (24H SYNC + FIXED)")
     
     mode = st.radio("분석 모드", ["🏆 AI 랭킹 (TOP 50)", "🔍 무제한 검색", "⭐ 내 관심종목 보기"])
     if 'scan_option' not in st.session_state: st.session_state.scan_option = "💎 AI 추천 TOP 50"
@@ -454,7 +517,8 @@ st.title(f"🇺🇸 {mode}")
 
 if target_tickers:
     with st.spinner(f"AI 정밀 분석 중... ({len(target_tickers)} 종목)"):
-        raw_data = get_market_data_raw(target_tickers)
+        # [FIX: Call v2]
+        raw_data = get_market_data_v2(target_tickers)
         market_data = process_market_data(raw_data, st.session_state.REAL_NAV, st.session_state.CONSEC_LOSS)
     
     if market_data:
@@ -491,7 +555,7 @@ if target_tickers:
             badge_html = f"<span class='st-highconv'>📰 News Alert</span>" if row['HighConviction'] else ""
             news_html = f"<div class='news-line'>{row['NewsHeadline']}</div>" if row['HighConviction'] and row['NewsHeadline'] else ""
             
-            # [FIX 1] Hide details for FILL
+            # [FIX: Hide info for FILL]
             if action_status == "FILL":
                 target_disp = "---"
                 stop_disp = "---"
@@ -507,7 +571,7 @@ if target_tickers:
                 elif val >= 4: return "sc-mid"
                 return "sc-low"
 
-            html_content = f"""<div class="metric-card {card_class}"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div><div style="font-weight:bold; color:{act_color}; font-size:12px; border:1px solid {act_color}; padding:2px 6px; border-radius:4px;">{act_badge}</div></div>{news_html}<div class="price-row"><span class="price-label">현재 시세(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_op}">{row['ChgOpen']:+.2f}%</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_pr}">{row['ChgPrev']:+.2f}%</span></div><div style="margin-top:10px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="ai-desc">💡 {row['Desc']}</div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">옵션<br><span class="score-val {get_color(row['OptionScore'])}">{row['OptionScore']}</span></div></div><div class="pt-box"><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val" style="color:#00FF00">{target_disp}</span></div><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val" style="color:#74b9ff">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val" style="color:#FF4444">{stop_disp}</span></div></div><div class="indicator-box">RSI: {rsi_disp} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"><div class="exit-box"><span style="color:#00FF00; font-weight:bold;">🌊 트레일 시작: ${row['TrailStart']:.2f}</span><br><span style="color:#FF4444;">🚨 손절(Max): ${row['HardStop']:.2f}</span><br><span style="color:#aaa;">⏳ 기한: {row['TimeStop']}{time_unit}</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">AI 비중 제안</span><br><span class="bet-badge bet-bg">{bet_text}</span></div></div></div>"""
+            html_content = f"""<div class="metric-card {card_class}"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div><div style="font-weight:bold; color:{act_color}; font-size:12px; border:1px solid {act_color}; padding:2px 6px; border-radius:4px;">{act_badge}</div></div>{news_html}<div class="price-row"><span class="price-label">현재 시세(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_op}">{row['ChgOpen']:+.2f}%</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_pr}">{row['ChgPrev']:+.2f}%</span></div><div style="margin-top:10px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="ai-desc">💡 {row['Desc']}</div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">옵션<br><span class="score-val {get_color(row['OptionScore'])}">{row['OptionScore']}</span></div></div><div class="pt-box"><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val" style="color:#00FF00">{target_disp}</span></div><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val" style="color:#74b9ff">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val" style="color:#FF4444">{stop_disp}</span></div></div><div class="indicator-box">RSI: {rsi_disp} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"><div class="exit-box"><span style="color:#00FF00; font-weight:bold;">🌊 트레일 시작: {target_disp} (0.5x)</span><br><span style="color:#aaa;">⏳ 기한: {row['TimeStop']}{time_unit}</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">AI 비중 제안</span><br><span class="bet-badge bet-bg">{bet_text}</span></div></div></div>"""
             
             c1, c2 = st.columns([0.85, 0.15])
             with c2:
